@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -37,7 +36,7 @@ import java.util.Set;
  * 导入时统一处理：按 EXIF 方向摆正、缩到最长边 1920、转存 JPEG 到应用私有目录。
  * 这样即使原图在 U 盘、后来拔掉了，壁纸也不会丢。
  */
-public final class WallpaperSourceActivity extends Activity {
+public final class WallpaperSourceActivity extends TvActivity {
     private static final int MAX_FOUND = 120;
     private static final int MAX_PICK = 15;
     private static final int REQ_STORAGE = 91;

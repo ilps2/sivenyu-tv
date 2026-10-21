@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
@@ -32,7 +31,7 @@ import java.util.Set;
  * 与壁纸不同，这里不复制文件（视频动辄几个 G），只记录绝对路径；
  * 播放时若文件不存在会跳过。所以 U 盘里的视频拔掉后要在本页重新选。
  */
-public final class SaverPickerActivity extends Activity {
+public final class SaverPickerActivity extends TvActivity {
     private static final int MAX_FOUND = 100;
     private static final int MAX_PICK = 40;
 

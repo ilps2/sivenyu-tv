@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -20,7 +19,7 @@ import android.widget.TextView;
  *
  * <p>全屏预览（不带图标和暗角），所见即首页效果；确认键保存，返回键放弃。
  */
-public final class WallpaperCropActivity extends Activity {
+public final class WallpaperCropActivity extends TvActivity {
     static final String EXTRA_FILE = "file";
     static final String EXTRA_ID = "id";
     static final String EXTRA_LABEL = "label";
