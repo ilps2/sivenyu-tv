@@ -54,6 +54,7 @@ final class FrameWallpapers {
     private Dialog uploadDialog;
     private TextView uploadStatus;
     private AlertDialog intervalDialog;
+    private Runnable wallpaperChanged;
     private TextView autoButton, fixedButton, intervalButton, localButton, uploadButton, cropButton;
 
     private static final String KEY_HIDDEN = "hidden-entries";
@@ -252,6 +253,12 @@ final class FrameWallpapers {
 
     int size() { return entries.size(); }
 
+    void setOnWallpaperChanged(Runnable listener) { wallpaperChanged = listener; }
+
+    private void notifyWallpaperChanged() {
+        if (!destroyed && wallpaperChanged != null) wallpaperChanged.run();
+    }
+
     String entryFile(int index) {
         return index >= 0 && index < entries.size() ? entries.get(index).file : null;
     }
@@ -293,6 +300,7 @@ final class FrameWallpapers {
                 if (!hasImage || !active) {
                     photo.setImageBitmap(image);
                     WallpaperCrop.apply(photo, crop);
+                    notifyWallpaperChanged();
                 } else {
                     transition.setImageBitmap(image);
                     WallpaperCrop.apply(transition, crop);
@@ -302,6 +310,7 @@ final class FrameWallpapers {
                         WallpaperCrop.apply(photo, crop);
                         transition.setImageDrawable(null);
                         transition.setAlpha(0f);
+                        notifyWallpaperChanged();
                     }).start();
                 }
                 hasImage = true;
@@ -321,6 +330,7 @@ final class FrameWallpapers {
         float[] crop = WallpaperCrop.read(activity, entries.get(current).id);
         WallpaperCrop.apply(photo, crop);
         WallpaperCrop.apply(transition, crop);
+        notifyWallpaperChanged();
     }
 
     private void schedule() {
@@ -339,6 +349,7 @@ final class FrameWallpapers {
     }
     void destroy() {
         destroyed = true;
+        wallpaperChanged = null;
         stopUploadServer();
         generation++;
         pause();

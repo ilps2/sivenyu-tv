@@ -1,91 +1,217 @@
 package io.github.op7418.sivenyutv;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
+import android.util.Log;
+import android.view.View;
+import android.widget.ImageView;
 
-/**
- * 轻量「液体玻璃」面板。
- *
- * 本机是 Android 9，没有 RenderEffect 实时背景模糊，所以用三层叠加模拟：
- *   1) 白色低透明度竖向渐变（上亮下暗，像玻璃厚度）
- *   2) 顶部 45% 再叠一层高光（受光面）
- *   3) 一圈上亮下暗的描边（玻璃边缘的转折光）
- */
+/** Liquid Glass inspired material that also works on Android 8/9 TV renderers. */
 final class Glass extends Drawable {
-    private final float radiusPx;
-    private final int topAlpha;
-    private final int bottomAlpha;
-    private final boolean rim;
-
-    private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final View host, scrim;
+    private final ImageView wallpaper;
+    private final float density;
+    private final RectF body = new RectF(), insetBox = new RectF();
+    private final Path shape = new Path(), rim = new Path(), inner = new Path();
+    private final Paint backdrop = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint film = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint lip = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final RectF box = new RectF();
+    private final Paint innerEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Matrix backdropMatrix = new Matrix();
+    private final int[] sourceLocation = new int[2], hostLocation = new int[2];
+    private Bitmap cachedBackdrop;
+    private BitmapShader backdropShader;
+    private int alpha = 255;
 
-    /** A capsule always uses half of its actual height, including larger font sizes. */
-    static Glass capsule(int topAlpha, int bottomAlpha) {
-        return new Glass(Float.POSITIVE_INFINITY, topAlpha, bottomAlpha);
-    }
-
-    Glass(float radiusPx, int topAlpha, int bottomAlpha) {
-        this(radiusPx, topAlpha, bottomAlpha, true);
-    }
-
-    Glass(float radiusPx, int topAlpha, int bottomAlpha, boolean rim) {
-        this.radiusPx = radiusPx;
-        this.topAlpha = topAlpha;
-        this.bottomAlpha = bottomAlpha;
-        this.rim = rim;
+    Glass(View host, ImageView wallpaper, View scrim) {
+        this.host = host;
+        this.wallpaper = wallpaper;
+        this.scrim = scrim;
+        density = host.getResources().getDisplayMetrics().density;
+        lip.setStyle(Paint.Style.STROKE);
+        lip.setStrokeWidth(dp(3));
         edge.setStyle(Paint.Style.STROKE);
+        edge.setStrokeWidth(dp(0.9f));
+        innerEdge.setStyle(Paint.Style.STROKE);
+        innerEdge.setStrokeWidth(dp(0.65f));
+    }
+
+    void setFocusRect(RectF rect) {
+        body.set(rect);
+        if (body.isEmpty()) return;
+        contour(shape, body);
+        insetBox.set(body);
+        insetBox.inset(dp(0.5f), dp(0.5f));
+        contour(rim, insetBox);
+        insetBox.set(body);
+        insetBox.inset(dp(1.8f), dp(1.8f));
+        contour(inner, insetBox);
+        film.setShader(new LinearGradient(0, body.top, 0, body.bottom,
+                new int[]{0x30FFFFFF, 0x17FFFFFF, 0x0BFFFFFF, 0x20FFFFFF},
+                new float[]{0f, 0.22f, 0.62f, 1f}, Shader.TileMode.CLAMP));
+        sheen.setShader(new LinearGradient(0, body.top, 0, body.centerY(),
+                0x15FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+        // Opposing highlights read as a curved transparent edge, rather than a white frame.
+        edge.setShader(new LinearGradient(body.left, body.top, body.right, body.bottom,
+                new int[]{0xB3FFFFFF, 0x38FFFFFF, 0x12FFFFFF, 0x88FFFFFF},
+                new float[]{0f, 0.34f, 0.66f, 1f}, Shader.TileMode.CLAMP));
+        lip.setShader(new LinearGradient(0, body.top, 0, body.bottom,
+                0x16FFFFFF, 0x06FFFFFF, Shader.TileMode.CLAMP));
+        innerEdge.setShader(new LinearGradient(0, body.top, 0, body.bottom,
+                new int[]{0x0AFFFFFF, 0x14000000, 0x2CFFFFFF}, null, Shader.TileMode.CLAMP));
+        invalidateSelf();
+    }
+
+    /** Curvature starts at zero where each end joins the straight section. */
+    private static void contour(Path path, RectF box) {
+        path.reset();
+        if (box.isEmpty()) return;
+        float rx = Math.min(box.width() / 2f, box.height() * 0.62f);
+        float ry = box.height() / 2f, tangent = rx * 0.52f;
+        float l = box.left, r = box.right, t = box.top, b = box.bottom;
+        path.moveTo(l + rx, t);
+        path.lineTo(r - rx, t);
+        path.cubicTo(r - rx + tangent, t, r, t, r, t + ry);
+        path.cubicTo(r, b, r - rx + tangent, b, r - rx, b);
+        path.lineTo(l + rx, b);
+        path.cubicTo(l + rx - tangent, b, l, b, l, b - ry);
+        path.cubicTo(l, t, l + rx - tangent, t, l + rx, t);
+        path.close();
+    }
+
+    /** Capture only the wallpaper and its dimming layer, never the app controls. */
+    void refreshBackdrop() {
+        int width = wallpaper.getWidth(), height = wallpaper.getHeight();
+        if (width <= 0 || height <= 0 || !host.isAttachedToWindow()) return;
+        float scale = Math.min(0.1f, 256f / Math.max(width, height));
+        int w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+        try {
+            Bitmap image = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(image);
+            canvas.scale(w / (float) width, h / (float) height);
+            wallpaper.draw(canvas);
+            scrim.draw(canvas);
+            int[] pixels = new int[w * h];
+            image.getPixels(pixels, 0, w, 0, 0, w, h);
+            blur(pixels, w, h);
+            image.setPixels(pixels, 0, w, 0, 0, w, h);
+            cachedBackdrop = image;
+            backdropShader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            backdrop.setShader(backdropShader);
+            backdrop.setAlpha(235);
+        } catch (RuntimeException | OutOfMemoryError unavailable) {
+            releaseBackdrop();
+            Log.w("SivenyuGlass", "壁纸玻璃缓存不可用", unavailable);
+        }
+        invalidateSelf();
+    }
+
+    /** Two separable box passes on a <=256px cache; no per-frame blur or full-size capture. */
+    private static void blur(int[] pixels, int width, int height) {
+        int[] temp = new int[pixels.length];
+        for (int pass = 0; pass < 2; pass++) {
+            for (int y = 0; y < height; y++) {
+                int red = 0, green = 0, blue = 0;
+                for (int k = -2; k <= 2; k++) {
+                    int color = pixels[y * width + Math.max(0, Math.min(width - 1, k))];
+                    red += (color >> 16) & 255; green += (color >> 8) & 255; blue += color & 255;
+                }
+                for (int x = 0; x < width; x++) {
+                    temp[y * width + x] = 0xFF000000 | ((red / 5) << 16) | ((green / 5) << 8) | (blue / 5);
+                    int add = pixels[y * width + Math.min(width - 1, x + 3)];
+                    int remove = pixels[y * width + Math.max(0, x - 2)];
+                    red += ((add >> 16) & 255) - ((remove >> 16) & 255);
+                    green += ((add >> 8) & 255) - ((remove >> 8) & 255);
+                    blue += (add & 255) - (remove & 255);
+                }
+            }
+            for (int x = 0; x < width; x++) {
+                int red = 0, green = 0, blue = 0;
+                for (int k = -2; k <= 2; k++) {
+                    int color = temp[Math.max(0, Math.min(height - 1, k)) * width + x];
+                    red += (color >> 16) & 255; green += (color >> 8) & 255; blue += color & 255;
+                }
+                for (int y = 0; y < height; y++) {
+                    pixels[y * width + x] = 0xFF000000 | ((red / 5) << 16) | ((green / 5) << 8) | (blue / 5);
+                    int add = temp[Math.min(height - 1, y + 3) * width + x];
+                    int remove = temp[Math.max(0, y - 2) * width + x];
+                    red += ((add >> 16) & 255) - ((remove >> 16) & 255);
+                    green += ((add >> 8) & 255) - ((remove >> 8) & 255);
+                    blue += (add & 255) - (remove & 255);
+                }
+            }
+        }
+    }
+
+    void releaseBackdrop() {
+        // Let render-thread references expire naturally; never recycle a displayed bitmap.
+        cachedBackdrop = null;
+        backdropShader = null;
+        backdrop.setShader(null);
+        invalidateSelf();
     }
 
     @Override public void draw(Canvas canvas) {
-        Rect bounds = getBounds();
-        if (bounds.isEmpty()) return;
-        box.set(bounds.left + 0.5f, bounds.top + 0.5f, bounds.right - 0.5f, bounds.bottom - 0.5f);
-        float radius = Math.min(radiusPx, Math.min(box.width(), box.height()) / 2f);
-
-        fill.setShader(new LinearGradient(0, box.top, 0, box.bottom,
-                white(topAlpha), white(bottomAlpha), Shader.TileMode.CLAMP));
-        canvas.drawRoundRect(box, radius, radius, fill);
-
-        float sheenHeight = box.height() * 0.45f;
-        sheen.setShader(new LinearGradient(0, box.top, 0, box.top + sheenHeight,
-                0x1FFFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
-        // Draw the same antialiased contour for every layer. A clipped rectangle can
-        // leave a hard, uneven highlight around the curved ends on older TV GPUs.
-        canvas.drawRoundRect(box, radius, radius, sheen);
-
-        if (!rim) return;
-        edge.setStrokeWidth(Math.max(1f, box.height() * 0.008f));
-        edge.setShader(new LinearGradient(0, box.top, 0, box.bottom,
-                0x5CFFFFFF, 0x14FFFFFF, Shader.TileMode.CLAMP));
-        float inset = edge.getStrokeWidth() / 2f;
-        RectF strokeBox = new RectF(box.left + inset, box.top + inset,
-                box.right - inset, box.bottom - inset);
-        canvas.drawRoundRect(strokeBox, Math.max(0f, radius - inset), Math.max(0f, radius - inset), edge);
+        if (body.isEmpty() || alpha == 0) return;
+        int save = canvas.save();
+        if (alpha < 255) canvas.saveLayerAlpha(null, alpha);
+        canvas.save();
+        canvas.translate(0, dp(2));
+        shadow.setStyle(Paint.Style.STROKE);
+        shadow.setStrokeWidth(dp(10)); shadow.setColor(0x06000000); canvas.drawPath(shape, shadow);
+        shadow.setStrokeWidth(dp(5)); shadow.setColor(0x10000000); canvas.drawPath(shape, shadow);
+        shadow.setStyle(Paint.Style.FILL);
+        shadow.setColor(0x24000000); canvas.drawPath(shape, shadow);
+        canvas.restore();
+        if (backdropShader != null && cachedBackdrop != null) {
+            wallpaper.getLocationInWindow(sourceLocation);
+            host.getLocationInWindow(hostLocation);
+            float magnify = 1.035f;
+            backdropMatrix.setScale(wallpaper.getWidth() * magnify / cachedBackdrop.getWidth(),
+                    wallpaper.getHeight() * magnify / cachedBackdrop.getHeight());
+            backdropMatrix.postTranslate((sourceLocation[0] - hostLocation[0]) * magnify
+                            + body.centerX() * (1f - magnify),
+                    (sourceLocation[1] - hostLocation[1]) * magnify + body.centerY() * (1f - magnify));
+            backdropShader.setLocalMatrix(backdropMatrix);
+            canvas.drawPath(shape, backdrop);
+        }
+        canvas.drawPath(shape, film);
+        canvas.drawPath(shape, sheen);
+        canvas.drawPath(rim, lip);
+        canvas.drawPath(rim, edge);
+        canvas.drawPath(inner, innerEdge);
+        canvas.restoreToCount(save);
     }
 
-    private static int white(int alpha) {
-        return (Math.max(0, Math.min(255, alpha)) << 24) | 0x00FFFFFF;
-    }
+    private float dp(float value) { return value * density; }
 
     @Override public void setAlpha(int alpha) {
-        // 由构造参数控制透明度，这里不额外处理
+        this.alpha = Math.max(0, Math.min(255, alpha));
+        invalidateSelf();
     }
 
-    @Override public void setColorFilter(ColorFilter colorFilter) {
-        fill.setColorFilter(colorFilter);
+    @Override public void setColorFilter(ColorFilter filter) {
+        backdrop.setColorFilter(filter);
+        film.setColorFilter(filter);
+        sheen.setColorFilter(filter);
+        edge.setColorFilter(filter);
+        lip.setColorFilter(filter);
+        innerEdge.setColorFilter(filter);
+        invalidateSelf();
     }
 
-    @Override public int getOpacity() {
-        return PixelFormat.TRANSLUCENT;
-    }
+    @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
 }
