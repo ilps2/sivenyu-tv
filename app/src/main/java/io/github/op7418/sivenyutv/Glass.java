@@ -4,7 +4,6 @@ import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -20,6 +19,13 @@ import android.graphics.drawable.Drawable;
  *   3) 一圈上亮下暗的描边（玻璃边缘的转折光）
  */
 final class Glass extends Drawable {
+    /**
+     * 胶囊标记：圆角永远取实际高度的一半，所以字号变化时形状自动跟着走。
+     * 用一个普通 float 存不下的哨兵值，而不是 Float.POSITIVE_INFINITY——
+     * 后者要一路传到 drawRoundRect，个别电视 GPU 上会出问题。
+     */
+    private static final float CAPSULE = -1f;
+
     private final float radiusPx;
     private final int topAlpha;
     private final int bottomAlpha;
@@ -29,7 +35,11 @@ final class Glass extends Drawable {
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF box = new RectF();
-    private final Path clip = new Path();
+
+    /** 胶囊：圆角恒为高度一半，字号变大也不会变成「圆角矩形」。 */
+    static Glass capsule(int topAlpha, int bottomAlpha) {
+        return new Glass(CAPSULE, topAlpha, bottomAlpha);
+    }
 
     Glass(float radiusPx, int topAlpha, int bottomAlpha) {
         this(radiusPx, topAlpha, bottomAlpha, true);
@@ -47,21 +57,20 @@ final class Glass extends Drawable {
         Rect bounds = getBounds();
         if (bounds.isEmpty()) return;
         box.set(bounds.left + 0.5f, bounds.top + 0.5f, bounds.right - 0.5f, bounds.bottom - 0.5f);
-        float radius = Math.min(radiusPx, Math.min(box.width(), box.height()) / 2f);
+        float radius = radiusPx < 0f
+                ? box.height() / 2f
+                : Math.min(radiusPx, Math.min(box.width(), box.height()) / 2f);
 
         fill.setShader(new LinearGradient(0, box.top, 0, box.bottom,
                 white(topAlpha), white(bottomAlpha), Shader.TileMode.CLAMP));
         canvas.drawRoundRect(box, radius, radius, fill);
 
-        clip.reset();
-        clip.addRoundRect(box, radius, radius, Path.Direction.CW);
-        canvas.save();
-        canvas.clipPath(clip);
         float sheenHeight = box.height() * 0.45f;
         sheen.setShader(new LinearGradient(0, box.top, 0, box.top + sheenHeight,
                 0x1FFFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
-        canvas.drawRect(box.left, box.top, box.right, box.top + sheenHeight, sheen);
-        canvas.restore();
+        // Draw the same antialiased contour for every layer. A clipped rectangle can
+        // leave a hard, uneven highlight around the curved ends on older TV GPUs.
+        canvas.drawRoundRect(box, radius, radius, sheen);
 
         if (!rim) return;
         edge.setStrokeWidth(Math.max(1f, box.height() * 0.008f));

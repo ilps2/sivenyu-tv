@@ -11,7 +11,6 @@ import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
-import android.view.KeyEvent;
 import android.view.View;
 import android.widget.GridLayout;
 import android.widget.ImageView;
@@ -29,10 +28,9 @@ import java.util.Map;
  * 首页应用管理页。
  *
  * <p>网格布局（每行 5 个），方向键四向移动，比单列一路往下快得多。
- * 已选的应用按勾选顺序排在最前面，名称前的蓝色数字就是首页上的位置。
+ * 已选的应用按首页顺序排在最前面，名称前的蓝色数字就是首页上的位置。
  *
- * <p>排序：焦点停在已选应用上<strong>长按确认键</strong>进入排序模式，
- * 之后 ← → 或 ↑ ↓ 调整它在序列里的位置，确认键放下、返回键取消。
+ * <p>此页只管理展示选择和卸载；调整位置请回到首页长按应用。
  */
 public final class AppPickerActivity extends TvActivity {
     static final String EXTRA_CHANGED = "changed";
@@ -55,8 +53,6 @@ public final class AppPickerActivity extends TvActivity {
     private TextView title;
     private LinearLayout footerBar;
     private TextView uninstallButton;
-    private String sortingPkg;
-    private List<String> sortingBackup;
     private boolean changed;
 
     /** 卸载模式：和「首页展示」是两套互不相干的选择，标记只存在这里。 */
@@ -105,7 +101,7 @@ public final class AppPickerActivity extends TvActivity {
         texts.setOrientation(LinearLayout.VERTICAL);
         title = label("选择首页应用", 28, Serif.light(this), 0xFFFFFFFF);
         texts.addView(title);
-        subtitle = label("确认键 添加 / 移除　·　长按确认键 调整顺序　·　返回键 完成", 13,
+        subtitle = label("确认键 添加 / 移除　·　长按 应用信息　·　返回键 完成", 13,
                 Serif.regular(this), 0x8AFFFFFF);
         LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(-2, -2);
         subParams.topMargin = dp(6);
@@ -212,7 +208,7 @@ public final class AppPickerActivity extends TvActivity {
         uninstallMode = false;
         toRemove.clear();
         title.setText("选择首页应用");
-        subtitle.setText("确认键 添加 / 移除　·　长按确认键 调整顺序　·　返回键 完成");
+        subtitle.setText("确认键 添加 / 移除　·　长按 应用信息　·　返回键 完成");
         fillFooter();
         refreshTiles();
         focusFirstTile();
@@ -338,12 +334,12 @@ public final class AppPickerActivity extends TvActivity {
         }, "picker-scan").start();
     }
 
-    /** 已选的按勾选顺序排在前面，未选的按扫描顺序跟在后面。 */
+    /** 已选的按首页顺序排在前面，未选的按扫描顺序跟在后面。 */
     private List<AppCatalog.Entry> orderForGrid() {
         Map<String, AppCatalog.Entry> byPkg = new LinkedHashMap<>();
         for (AppCatalog.Entry entry : apps) byPkg.put(entry.pkg, entry);
         List<AppCatalog.Entry> ordered = new ArrayList<>();
-        for (String pkg : selected) {
+        for (String pkg : HomeSelection.order(this, new ArrayList<>(selected))) {
             AppCatalog.Entry entry = byPkg.get(pkg);
             if (entry != null) ordered.add(entry);
         }
@@ -355,7 +351,11 @@ public final class AppPickerActivity extends TvActivity {
 
     private void rebuild() {
         if (grid == null) return;
-        final String keep = sortingPkg;
+        String keep = null;
+        View focused = getCurrentFocus();
+        for (Map.Entry<String, LinearLayout> entry : tiles.entrySet()) {
+            if (entry.getValue() == focused) { keep = entry.getKey(); break; }
+        }
         grid.removeAllViews();
         tiles.clear();
         names.clear();
@@ -413,23 +413,16 @@ public final class AppPickerActivity extends TvActivity {
         names.put(entry.pkg, name);
         icons.put(entry.pkg, icon);
 
-        // 长按确认键（遥控器按住约 0.5 秒）进入排序模式；之后的 click 要吞掉
-        final boolean[] longPressed = {false};
-        tile.setOnKeyListener((v, keyCode, event) -> {
-            boolean center = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER;
-            if (center && event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 1
-                    && !uninstallMode) {
-                longPressed[0] = true;
-                startSorting(entry.pkg);
-                return true;
-            }
-            return false;
-        });
         tile.setOnClickListener(v -> {
-            if (longPressed[0]) { longPressed[0] = false; return; }
-            if (sortingPkg != null) return;
             if (uninstallMode) toggleRemove(entry.pkg);
             else toggle(entry.pkg);
+        });
+        // 排序已经挪到首页长按，这里空出来的长按用来打开系统应用信息页。
+        // 卸载模式下不响应，免得和「标记删除」的手感混在一起。
+        tile.setOnLongClickListener(v -> {
+            if (uninstallMode) return false;
+            openAppDetails(entry.pkg);
+            return true;
         });
         tile.setOnFocusChangeListener((v, focused) -> {
             applyTileStyle(tile, entry.pkg, focused);
@@ -503,18 +496,15 @@ public final class AppPickerActivity extends TvActivity {
             return;
         }
         boolean chosen = selected.contains(pkg);
-        boolean sorting = pkg.equals(sortingPkg);
-        if (sorting) {
-            tile.setBackground(rounded(0x33FFD9A0, 14, 0xFFFFD9A0));
-        } else if (focused) {
+        if (focused) {
             tile.setBackground(rounded(0x33FFFFFF, 14, 0));
         } else if (chosen) {
             tile.setBackground(rounded(0x14FFFFFF, 14, 0));
         } else {
             tile.setBackground(null);
         }
-        tile.animate().scaleX(focused || sorting ? 1.06f : 1f)
-                .scaleY(focused || sorting ? 1.06f : 1f).setDuration(120).start();
+        tile.animate().scaleX(focused ? 1.06f : 1f)
+                .scaleY(focused ? 1.06f : 1f).setDuration(120).start();
         ImageView icon = icons.get(pkg);
         if (icon != null) icon.setAlpha(focused || chosen ? 1f : 0.7f);
     }
@@ -525,84 +515,19 @@ public final class AppPickerActivity extends TvActivity {
             return;
         }
         int hidden = apps.size() - selected.size();
-        counter.setText(selected.isEmpty() ? "已选 0 个（显示全部）"
+        boolean showAll = !changed && !HomeSelection.curated(this);
+        counter.setText(selected.isEmpty() ? (showAll ? "已选 0 个（显示全部）" : "已选 0 个（首页不展示应用）")
                 : "已选 " + selected.size() + " 个　未选 " + Math.max(0, hidden));
     }
-
-    // ---------------------------------------------------------------- 排序
-
-    private void startSorting(String pkg) {
-        if (!selected.contains(pkg)) {
-            subtitle.setText("「" + labelOf(pkg) + "」还没选中，先按确认键选中，再长按调整顺序");
-            return;
+    /** 打开系统「应用信息」页。部分电视固件没有这个 Activity，捕获后给一句提示。 */
+    private void openAppDetails(String pkg) {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:" + pkg))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (RuntimeException unavailable) {
+            Serif.toast(this, "这台电视没有应用信息页面");
         }
-        if (selected.size() < 2) {
-            subtitle.setText("只选了一个应用，没有可调整的顺序");
-            return;
-        }
-        sortingPkg = pkg;
-        sortingBackup = new ArrayList<>(selected);
-        subtitle.setText("调整顺序：← ↑ 前移　→ ↓ 后移　·　确认键 放下　·　返回键 取消");
-        applyTileStyle(tiles.get(pkg), pkg, true);
-        android.util.Log.i("TvHome.Picker", "排序模式 " + pkg);
-    }
-
-    private void endSorting(boolean keep) {
-        if (sortingPkg == null) return;
-        String pkg = sortingPkg;
-        sortingPkg = null;
-        if (!keep && sortingBackup != null) {
-            selected.clear();
-            selected.addAll(sortingBackup);
-            markChanged();
-            rebuild();
-        }
-        sortingBackup = null;
-        subtitle.setText("确认键 添加 / 移除　·　长按确认键 调整顺序　·　返回键 完成");
-        refreshTiles();
-        View tile = tiles.get(pkg);
-        if (tile != null) tile.requestFocus();
-    }
-
-    /** 在已选序列里前后挪一位，界面上的蓝色序号会实时跟着变。 */
-    private void moveInSelection(int delta) {
-        if (sortingPkg == null) return;
-        List<String> order = new ArrayList<>(selected);
-        int from = order.indexOf(sortingPkg);
-        int to = from + delta;
-        if (from < 0 || to < 0 || to >= order.size()) return;
-        order.remove(from);
-        order.add(to, sortingPkg);
-        selected.clear();
-        selected.addAll(order);
-        markChanged();
-        rebuild();
-    }
-
-    @Override public boolean dispatchKeyEvent(KeyEvent event) {
-        if (sortingPkg != null) {
-            if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
-            switch (event.getKeyCode()) {
-                case KeyEvent.KEYCODE_DPAD_LEFT:
-                case KeyEvent.KEYCODE_DPAD_UP:
-                    moveInSelection(-1);
-                    return true;
-                case KeyEvent.KEYCODE_DPAD_RIGHT:
-                case KeyEvent.KEYCODE_DPAD_DOWN:
-                    moveInSelection(1);
-                    return true;
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER:
-                    endSorting(true);
-                    return true;
-                case KeyEvent.KEYCODE_BACK:
-                    endSorting(false);
-                    return true;
-                default:
-                    return true;
-            }
-        }
-        return super.dispatchKeyEvent(event);
     }
 
     private String labelOf(String pkg) {
@@ -619,7 +544,7 @@ public final class AppPickerActivity extends TvActivity {
     // ---------------------------------------------------------------- 收尾
 
     private void finishPicker() {
-        HomeSelection.save(this, selected);
+        if (changed) HomeSelection.save(this, selected);
         Intent result = new Intent();
         result.putExtra(EXTRA_CHANGED, changed);
         setResult(RESULT_OK, result);
@@ -627,10 +552,6 @@ public final class AppPickerActivity extends TvActivity {
     }
 
     @Override public void onBackPressed() {
-        if (sortingPkg != null) {
-            endSorting(false);
-            return;
-        }
         if (uninstallMode) {
             exitUninstallMode();
             return;
