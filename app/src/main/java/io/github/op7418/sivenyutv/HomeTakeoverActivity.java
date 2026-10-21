@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -24,7 +23,7 @@ import android.widget.Toast;
  *
  * 接管 Home 键后不依赖广播，所以 A 类问题的终极解法就是这里。
  */
-public final class HomeTakeoverActivity extends Activity {
+public final class HomeTakeoverActivity extends TvActivity {
     private TextView homeValue;
     private TextView bootValue;
     private TextView attemptValue;

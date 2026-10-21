@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
@@ -10,7 +9,7 @@ import android.view.View;
 import android.view.WindowManager;
 
 /** 全屏屏保宿主：显示图片/视频混排，任意键或触摸退出。 */
-public final class SaverActivity extends Activity {
+public final class SaverActivity extends TvActivity {
     private static final String TAG = "SivenyuSaver";
 
     /**
@@ -41,6 +40,7 @@ public final class SaverActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (isVolumeKey(event)) return super.dispatchKeyEvent(event);
         if (inGrace()) return true;   // 冷却期内一律吞掉，避免被刚才那次按键打掉
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             Log.i(TAG, "屏保退出：按键 code=" + event.getKeyCode());

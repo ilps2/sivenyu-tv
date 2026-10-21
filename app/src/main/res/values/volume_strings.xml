@@ -1,0 +1,6 @@
+<resources>
+    <string name="volume_label">音量</string>
+    <string name="volume_muted">已静音</string>
+    <string name="volume_percent">%1$d%%</string>
+    <string name="volume_description">音量 %1$d%%</string>
+</resources>
