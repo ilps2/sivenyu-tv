@@ -3,7 +3,7 @@
 一个给国内小米电视用的简洁桌面：大字、卡片、壁纸与屏保，以及常用应用的直达入口。
 
 **这是一个二次开发项目。** 代码源头是 [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)（MIT License），
-实际起点是**归藏电视**发布的教程与整理包，本项目在此基础上重构了整套界面与媒体管理。
+实际起点是[归藏电视](https://github.com/op7418/guizang-tv)发布的教程与整理包，本项目在此基础上重构了整套界面与媒体管理。
 上游作者与原始版权归原作者所有，本项目与归藏电视、cleanyourtv 均无隶属关系。
 完整来源链条、改动范围与许可归属见 [NOTICE.md](NOTICE.md)。
 
@@ -129,8 +129,8 @@ gradle :app:assembleDebug
 
 - **[Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)** —— MIT License，**代码源头**。
   本项目的绝大部分代码来自这里，按 MIT 要求保留了原始版权声明。
-- **归藏电视** —— 提供了面向国内小米电视的**教程文章与整理后的 APK**，是本次二次开发的实际起点。
-  本项目在其发布包的基础上调试改造，界面与交互随后完全重写。
+- **[归藏电视](https://github.com/op7418/guizang-tv)** —— 提供了面向国内小米电视的**教程与整理后的 APK**，是本次二次开发的实际起点。
+  本项目在其 `v0.2.0` 发布包的基础上调试改造，界面与交互随后完全重写。
   感谢归藏电视作者把开源项目整理成了能直接上手的版本，让这个项目有了起步的基础。
   *（本项目与归藏电视无隶属关系，名称、包名与代码均已独立，未使用其商标资源。）*
 - **[nthnclrk/CleanFrame](https://github.com/nthnclrk/CleanFrame)** —— Nathan Clark，**界面方向参考**。
