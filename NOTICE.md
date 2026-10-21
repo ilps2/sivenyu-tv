@@ -58,8 +58,13 @@ Gathin23/cleanyourtv（MIT，代码源头）
 
 - **代码**：MIT License，见根目录 LICENSE。
 - **打包字体**：Noto Serif SC（思源宋体）三个字重，适用 SIL Open Font License 1.1，许可全文见 `app/src/main/assets/fonts/OFL.txt`。字体许可与代码许可相互独立。
+- **第三方运行时依赖**：**Google ZXing core 3.5.3**，用于生成二维码，适用 **Apache License 2.0**。
+  项目主页 https://github.com/zxing/zxing ，许可全文 https://www.apache.org/licenses/LICENSE-2.0 。
+  本项目只使用其 `core` 模块的 `QRCodeWriter`，未使用任何图形渲染后端。
 - **内置照片**：适用 Unsplash License，**不适用**代码的 MIT 许可。逐张署名、原始链接和处理方式见 [壁纸说明](docs/WALLPAPERS.md)，许可通知也随 APK 打包。
 - **横幅图片（banner）**：仓库内不含任何第三方产品商标图。横幅由用户在运行期自行放入 `U 盘根目录/aptv-banners/` 或 `Download/aptv-banners/`，命名方式见 `app/src/main/assets/banners/README.txt`。
+
+终端用户可查阅的许可汇总随 APK 打包在 `assets/third_party/LICENSES.md`。
 
 ## 商标
 

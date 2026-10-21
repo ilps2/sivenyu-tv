@@ -24,19 +24,36 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 极简 HTTP 服务：手机扫码打开页面，把图片/视频直接推到电视。
+ * 极简HTTP 服务：手机扫码打开页面，把图片/视频直接推到电视。
  *
  * 只做三件事：
- *   GET  /        返回上传页面
+ *   GET  /        返回上传页面（需带会话令牌）
  *   POST /upload  请求体是文件原始字节，?name=文件名
  *   POST /clear   清空刚上传的暂存（保留给以后扩展）
  *
  * 没有用 multipart —— 页面里用 fetch 直接发 File 对象，body 就是原始字节，
- * 服务端只按 Content-Length 流式落盘，几 GB 也不会吃内存。上传完即关闭。
+ * 服务端只按 Content-Length 流式落盘，不会吃内存。上传完即关闭。
+ *
+ * <h3>访问控制</h3>
+ * 端口只在用户主动打开上传窗口期间监听，同一局域网内的任何设备都能连到，
+ * 因此做了三层限制：
+ * <ul>
+ *   <li><b>会话令牌</b>：每次启动生成随机令牌，页面与上传请求都必须携带，
+ *       不带或错误的请求一律拒绝，防止旁人凭空猜到端口来写文件。</li>
+ *   <li><b>总量上限</b>：单次会话累计接收量有上限，避免开着窗口时
+ *       被同一局域网内的其他设备灌满电视存储。</li>
+ *   <li><b>单文件上限</b>：单张图片或单个视频的大小上限。</li>
+ * </ul>
+ * 令牌只存在于内存中，窗口关闭即失效。
  */
 final class UploadServer {
     private static final String TAG = "SivenyuUpload";
-    private static final long MAX_BYTES = 1024L * 1024L * 1024L;   // 单个文件上限 1GB
+    /** 单个文件上限 200MB：足够放 4K 视频，同时不至于被单个请求撑爆存储。 */
+    private static final long MAX_BYTES = 200L * 1024L * 1024L;
+    /** 单次会话（从打开窗口到关闭）累计接收上限 2GB。 */
+    private static final long MAX_SESSION_BYTES = 2L * 1024L * 1024L * 1024L;
+    /** 令牌长度（十六进制字符数）。 */
+    private static final int TOKEN_LENGTH = 32;
 
     interface Listener {
         /** 收到文件时回调（后台线程），file 已完整写入。 */
@@ -48,9 +65,29 @@ final class UploadServer {
     private final File videoDir;
     private final Listener listener;
 
+    /** 本次会话的访问令牌，每次 start 重新生成；窗口关闭后失效。 */
+    private final String token = newToken();
+    /** 本次会话已接收的累计字节数，防止开着窗口时被灌满存储。 */
+    private final java.util.concurrent.atomic.AtomicLong received =
+            new java.util.concurrent.atomic.AtomicLong();
+
     private ServerSocket server;
     private Thread worker;
     private volatile boolean running;
+
+    /** 会话令牌，供调用方拼进二维码地址里。 */
+    String token() {
+        return token;
+    }
+
+    private static String newToken() {
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        StringBuilder out = new StringBuilder(TOKEN_LENGTH);
+        for (int i = 0; i < TOKEN_LENGTH; i++) {
+            out.append("0123456789abcdef".charAt(random.nextInt(16)));
+        }
+        return out.toString();
+    }
 
     UploadServer(int port, File imageDir, File videoDir, Listener listener) {
         this.port = port;
@@ -144,6 +181,12 @@ final class UploadServer {
         }
 
         if (!"POST".equals(method)) {
+            // 页面也要求令牌：没有令牌就返回 403，浏览器地址栏输入 IP 只会看到拒绝提示。
+            if (!token.equals(param(query, "t")) && !token.equals(headers.get("x-upload-token"))) {
+                writeResponse(out, 403, "text/plain; charset=utf-8",
+                        "缺少或错误的会话令牌，请在电视上重新扫码打开页面".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
             byte[] body = page().getBytes(StandardCharsets.UTF_8);
             writeResponse(out, 200, "text/html; charset=utf-8", body);
             return;
@@ -151,6 +194,12 @@ final class UploadServer {
         if (!"/upload".equals(target)) {
             writeResponse(out, 404, "text/plain; charset=utf-8",
                     "not found".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (!token.equals(param(query, "t")) && !token.equals(headers.get("x-upload-token"))) {
+            Log.w(TAG, "拒绝无令牌的上传请求");
+            writeResponse(out, 403, "text/plain; charset=utf-8",
+                    "缺少或错误的会话令牌".getBytes(StandardCharsets.UTF_8));
             return;
         }
         receive(out, in, headers, param(query, "name"));
@@ -173,7 +222,14 @@ final class UploadServer {
             return;
         }
         if (length > MAX_BYTES) {
-            fail(out, "文件超过 1GB");
+            fail(out, "单个文件超过 " + (MAX_BYTES / 1024 / 1024) + "MB");
+            return;
+        }
+        // 会话总量：防止端口开着时被同一局域网的设备反复灌入。
+        long used = received.get();
+        if (used + length > MAX_SESSION_BYTES) {
+            fail(out, "本次会话累计已达上限（" + (MAX_SESSION_BYTES / 1024 / 1024) + "MB），"
+                    + "请在电视上重新打开上传窗口");
             return;
         }
 
@@ -198,6 +254,9 @@ final class UploadServer {
                 if (read < 0) break;
                 stream.write(buffer, 0, read);
                 remaining -= read;
+                // 按实际写入量累加，而不是按声明的Content-Length，
+                // 避免伪造长度绕过会话总量上限。
+                received.addAndGet(read);
             }
         }
 
@@ -317,8 +376,9 @@ final class UploadServer {
         out.flush();
     }
 
-    /** 手机端页面：深色、单列、带每个文件的进度条。 */
-    private static String page() {
+    /** 手机端页面：深色、单列、带每个文件的进度条。令牌由服务端注入到上传请求里。 */
+    private String page() {
+        final String tk = token;
         StringBuilder html = new StringBuilder(2600);
         html.append("<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>");
         html.append("<meta name='viewport' content='width=device-width,initial-scale=1'>");
@@ -355,7 +415,7 @@ final class UploadServer {
         html.append("list.appendChild(row);");
         html.append("const fill=row.querySelector('.fill');");
         html.append("const xhr=new XMLHttpRequest();");
-        html.append("xhr.open('POST','/upload?name='+encodeURIComponent(file.name));");
+        html.append("xhr.open('POST','/upload?t='+tk+'&name='+encodeURIComponent(file.name));");
         html.append("xhr.upload.onprogress=e=>{if(e.lengthComputable){");
         html.append("fill.style.width=(e.loaded/e.total*100).toFixed(1)+'%';}};");
         html.append("xhr.onload=()=>{if(xhr.status===200){fill.style.width='100%';");

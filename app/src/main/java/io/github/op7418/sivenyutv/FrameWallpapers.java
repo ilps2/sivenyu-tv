@@ -531,7 +531,6 @@ final class FrameWallpapers {
             return;
         }
         final int port = 8080;
-        final String url = "http://" + ip + ":" + port + "/";
         final java.io.File mediaDir = MediaLibrary.dir(activity);
 
         stopUploadServer();
@@ -549,6 +548,9 @@ final class FrameWallpapers {
             uploadServer = null;
             return;
         }
+        // 地址带上本次会话的令牌：端口只监听一次，令牌随窗口关闭失效，
+        // 同一局域网的其他人只输 IP 进不来。
+        final String url = "http://" + ip + ":" + port + "/?t=" + uploadServer.token();
 
         Dialog sheet = new Dialog(activity);
         sheet.requestWindowFeature(Window.FEATURE_NO_TITLE);

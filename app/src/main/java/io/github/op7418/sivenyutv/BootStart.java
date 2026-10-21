@@ -30,9 +30,15 @@ public final class BootStart {
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /** 开机自动进入，默认开启（本改造的主诉求）。 */
+    /**
+     * 开机自动进入，**默认关闭**。
+     *
+     * <p>与文档、README 和开机自启向导保持一致：用户必须在应用内显式开启开关，
+     * 再完成一次 ADB 系统配置，两个条件同时满足才会自动拉起。
+     * 首次安装后偏好里没有这个键时返回 false，即不擅自接管电视的开机行为。
+     */
     static boolean autoBoot(Context c) {
-        return prefs(c).getBoolean("auto-boot", true);
+        return prefs(c).getBoolean("auto-boot", false);
     }
 
     static void setAutoBoot(Context c, boolean value) {
