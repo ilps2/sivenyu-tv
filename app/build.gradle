@@ -1,0 +1,39 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'io.github.op7418.sivenyutv'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'io.github.op7418.sivenyutv'
+        minSdk 26
+        targetSdk 34
+        versionCode 234
+        versionName "2.7.2-aptv"
+    }
+    signingConfigs {
+        release {
+            if (System.getenv('GUIZANG_KEYSTORE')) {
+                storeFile file(System.getenv('GUIZANG_KEYSTORE'))
+                storePassword System.getenv('GUIZANG_STORE_PASSWORD')
+                keyAlias System.getenv('GUIZANG_KEY_ALIAS') ?: 'guizang-tv'
+                keyPassword System.getenv('GUIZANG_KEY_PASSWORD') ?: System.getenv('GUIZANG_STORE_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (System.getenv('GUIZANG_KEYSTORE')) signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    implementation 'com.google.zxing:core:3.5.3'
+}

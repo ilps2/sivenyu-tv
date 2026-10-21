@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- View.setTag(int, Object) 的 key 必须是本应用的资源 id，
+         用 android.R.id.* 会抛 "The key must be an application-specific resource id" -->
+    <item name="tag_check" type="id" />
+</resources>

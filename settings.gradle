@@ -1,0 +1,19 @@
+// 默认只走官方仓库，便于海外用户直接构建。
+// 国内网络环境如果拉依赖太慢，可以在 ~/.gradle/init.gradle 里自行加入镜像，
+// 不需要改动本仓库。示例见 docs/PROJECT-GUIDE.zh-CN.md 的「构建加速」一节。
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'sivenyu-tv'
+include ':app'

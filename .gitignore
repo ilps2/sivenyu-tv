@@ -1,0 +1,39 @@
+.gradle/
+**/build/
+local.properties
+.idea/
+.DS_Store
+__pycache__/
+.venv/
+.wallpaper-backups/
+*.pyc
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.key
+.env
+.env.*
+*.log
+# Personal media are local build inputs, never public source.
+app/src/main/assets/wallpapers/*
+!app/src/main/assets/wallpapers/catalog.json
+!app/src/main/assets/wallpapers/README.md
+!app/src/main/assets/wallpapers/UNSPLASH-NOTICE.txt
+# Only the five explicitly selected, source-verified Unsplash photos are public assets.
+# Listed one by one on purpose: a bare "!bundled/" exception would let any photo later
+# dropped into that directory be committed by accident.
+!app/src/main/assets/wallpapers/bundled/
+app/src/main/assets/wallpapers/bundled/*
+!app/src/main/assets/wallpapers/bundled/MEDIA-INDEX.md
+!app/src/main/assets/wallpapers/bundled/4axNezh03UA.jpg
+!app/src/main/assets/wallpapers/bundled/4axNezh03UA-thumb.jpg
+!app/src/main/assets/wallpapers/bundled/JtF_FvXVQQI.jpg
+!app/src/main/assets/wallpapers/bundled/JtF_FvXVQQI-thumb.jpg
+!app/src/main/assets/wallpapers/bundled/hqzyUL3M21k.jpg
+!app/src/main/assets/wallpapers/bundled/hqzyUL3M21k-thumb.jpg
+!app/src/main/assets/wallpapers/bundled/rSYsP5TlEAk.jpg
+!app/src/main/assets/wallpapers/bundled/rSYsP5TlEAk-thumb.jpg
+!app/src/main/assets/wallpapers/bundled/vwFvhJf6u_I.jpg
+!app/src/main/assets/wallpapers/bundled/vwFvhJf6u_I-thumb.jpg

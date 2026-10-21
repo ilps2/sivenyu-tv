@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#172B3B"/><stop offset="1" stop-color="#B78060"/>
+    </linearGradient>
+    <linearGradient id="shade">
+      <stop stop-color="#0C0C0C" stop-opacity=".6"/>
+      <stop offset=".5" stop-color="#0C0C0C" stop-opacity=".21"/>
+      <stop offset="1" stop-color="#0C0C0C" stop-opacity=".44"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#sky)"/>
+  <rect width="1280" height="720" fill="url(#shade)"/>
+  <g fill="white" font-family="sans-serif">
+    <text x="1195" y="94" font-size="35" text-anchor="end">21:08</text>
+    <g font-size="51" font-weight="300">
+      <text x="85" y="183">PlayStation 5</text>
+      <g opacity=".55">
+        <text x="85" y="270">Apple TV</text>
+        <text x="85" y="357">哔哩哔哩</text>
+        <text x="85" y="444">小米投屏</text>
+        <text x="85" y="531">相册</text>
+        <text x="85" y="618">小米原桌面</text>
+      </g>
+    </g>
+    <g font-size="16" opacity=".7">
+      <text x="420" y="183">HDMI 2</text><text x="330" y="270">HDMI 1</text>
+    </g>
+    <g font-size="21" opacity=".65" text-anchor="end">
+      <text x="1195" y="492">壁纸设置</text>
+      <text x="1195" y="540">全部应用</text>
+      <text x="1195" y="588">其他信号源</text>
+      <text x="1195" y="636">设置</text>
+    </g>
+  </g>
+</svg>

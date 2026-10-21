@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.SivenyuTV" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+    <string name="app_name">斯文鱼TV</string>
+</resources>

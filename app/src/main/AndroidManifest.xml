@@ -1,0 +1,95 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 应用选择页的批量卸载：Android 8+ 起 ACTION_DELETE 需要这个普通权限，
+         否则 UninstallerActivity 直接拒绝（日志：「does not have ... REQUEST_DELETE_PACKAGES」） -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <queries>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent>
+        <package android:name="com.xiaomi.mitv.settings" />
+        <package android:name="com.xiaomi.mitv.tvplayer" />
+        <package android:name="com.mitv.tvhome" />
+    </queries>
+    <application android:label="@string/app_name" android:icon="@drawable/ic_launcher"
+        android:banner="@drawable/banner" android:theme="@style/Theme.SivenyuTV"
+        android:allowBackup="false" android:supportsRtl="true">
+        <activity android:name=".FrameHomeActivity" android:exported="true"
+            android:launchMode="singleTask" android:stateNotNeeded="true"
+            android:excludeFromRecents="true" android:clearTaskOnLaunch="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Xiaomi's package-based startup hook resolves INFO before LAUNCHER.
+             Ordinary TV app-list entries still open FrameHomeActivity directly. -->
+        <activity android:name=".BootGateActivity" android:exported="true"
+            android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.INFO" />
+            </intent-filter>
+        </activity>
+        <!-- 首页应用管理页：勾选要显示在首页的应用 -->
+        <activity android:name=".AppPickerActivity" android:exported="false"
+            android:launchMode="singleTop" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 屏保播放器：本地图片 + 视频混排，任意键退出 -->
+        <activity android:name=".SaverActivity" android:exported="true"
+            android:launchMode="singleTask" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 屏保内容选择：本地图片与视频多选 -->
+        <activity android:name=".SaverPickerActivity" android:exported="true"
+            android:launchMode="singleTop" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 标准系统屏保入口（本机固件无 DreamManagerService，暂不会被调用） -->
+        <service android:name=".SaverDreamService" android:exported="true"
+            android:permission="android.permission.BIND_DREAM_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.dreams.DreamService" />
+            </intent-filter>
+            <meta-data android:name="android.service.dream" android:resource="@xml/dream_info" />
+        </service>
+        <!-- 接管 Home 键向导：状态检测 + ADB 命令 -->
+        <activity android:name=".HomeTakeoverActivity" android:exported="false"
+            android:launchMode="singleTop" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 本地壁纸选择：扫描机身/U盘图片，导入到应用私有目录 -->
+        <activity android:name=".WallpaperSourceActivity" android:exported="false"
+            android:launchMode="singleTop" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 壁纸画面位置：竖图按宽度铺满后用上下键选显示哪一段 -->
+        <activity android:name=".WallpaperCropActivity" android:exported="false"
+            android:launchMode="singleTop" android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|uiMode"
+            android:screenOrientation="landscape" />
+        <!-- 开机广播拉起桌面；本改造的主入口 -->
+        <receiver android:name=".BootReceiver" android:exported="true" android:enabled="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.mitv.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <!-- 开机拉起的重试闹钟（内部广播，不对外） -->
+        <receiver android:name=".BootRetryReceiver" android:exported="false" />
+    </application>
+</manifest>

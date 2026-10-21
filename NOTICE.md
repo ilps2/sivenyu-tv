@@ -1,0 +1,43 @@
+# 来源与许可
+
+斯文鱼TV（sivenyu-tv）是**基于第三方 MIT 项目二次开发的衍生作品**，不是上游项目的官方版本。
+上游作者与原始版权归原作者所有。以下逐项说明来源、许可与本项目所做的改动。
+
+## 上游项目
+
+- 初始工程基础：**Gathin23/cleanyourtv**，MIT License。
+  - https://github.com/Gathin23/cleanyourtv
+  - 本项目定制基线：`69c93b66a75c70a9e386adff327b6a51c12addc5`
+  - 原始版权：Copyright (c) 2026 Gathin，完整保留于根目录 LICENSE。
+  - **MIT License 要求所有副本与实质性部分都保留原版权声明与许可全文，因此本仓库的 LICENSE 中 Gathin 的版权行不可删除。**
+- 设计参考：nthnclrk/CleanFrame，Nathan Clark。
+  - https://github.com/nthnclrk/CleanFrame
+  - 参考版本：`fa537d1892b71d2de2bf94c24cbff3812e9f70d5`
+  - 本项目没有打包其 Tizen 代码或照片。
+
+## 本项目所做的改动
+
+在上述 MIT 项目基础上，v2.x 相对v0.2.0 基线的主要改动：
+
+- 界面重构：首页从「左侧大字列表」改为卡片式网格，采用「聚焦才展开」交互（常态仅显示应用名，聚焦时浮现横幅并将其余卡片压暗），卡片为自绘 View 绘制四边等弧度圆角。
+- 应用管理：新增独立的应用选择页，支持勾选、排序、5 列网格浏览，并提供与首页展示完全分离的批量卸载模式（调用系统 `ACTION_DELETE`，逐个确认）。
+- 媒体库：壁纸与屏保统一到 `files/media/`，内置壁纸可隐藏/恢复，屏保内容页与壁纸面板共享同一隐藏名单，图片解码前先读 EXIF 方向。
+- 字体：全应用使用思源宋体（Noto Serif SC），随包分发，见下节。
+- 其他：开机自启（可选，默认关闭）、运行期自定义横幅目录、透明度玻璃面板等。
+
+## 许可
+
+- **代码**：MIT License，见根目录 LICENSE。
+- **打包字体**：Noto Serif SC（思源宋体）三个字重，适用 SIL Open Font License 1.1，许可全文见 `app/src/main/assets/fonts/OFL.txt`。字体许可与代码许可相互独立。
+- **内置照片**：适用 Unsplash License，**不适用**代码的 MIT 许可。逐张署名、原始链接和处理方式见 [壁纸说明](docs/WALLPAPERS.md)，许可通知也随 APK 打包。
+- **横幅图片（banner）**：仓库内不含任何第三方产品商标图。横幅由用户在运行期自行放入 `U 盘根目录/aptv-banners/` 或 `Download/aptv-banners/`，命名方式见 `app/src/main/assets/banners/README.txt`。
+
+## 商标
+
+各产品与商标归其权利人所有。本项目不隶属于小米、Sony、Apple、哔哩哔哩或任何上游项目作者。
+「归藏 / GuiZang TV」是上游项目的名称，本项目已改名为「斯文鱼TV / sivenyu-tv」，与上游无隶属关系。
+
+## 不包含的内容
+
+签名密钥、实机诊断数据、本机路径与私人试用素材均不在公开源代码或官方 APK 中。
+用户自行加入的照片、视频与横幅不因放入本工程而自动获得 MIT 许可。
