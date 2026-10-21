@@ -214,16 +214,17 @@ public final class FrameHomeActivity extends TvActivity {
     private void addDockItem(LinearLayout dock, String name, Runnable action) {
         TextView item = label(name, 17, Serif.regular(this), 0xCCFFFFFF);
         item.setGravity(Gravity.CENTER);
+        item.setMinHeight(dp(48));
         item.setPadding(dp(26), dp(10), dp(26), dp(10));
         item.setShadowLayer(dp(6), 0, dp(2), 0xC0000000);
         item.setFocusable(true);
         item.setId(View.generateViewId());
         item.setOnClickListener(v -> action.run());
-        final android.graphics.drawable.Drawable focusedGlass = new Glass(dp(24), 0x52, 0x22);
+        final android.graphics.drawable.Drawable focusedGlass = Glass.capsule(0x52, 0x22);
         item.setOnFocusChangeListener((v, focused) -> {
             item.setBackground(focused ? focusedGlass : null);
             item.setTextColor(focused ? 0xFFFFFFFF : 0xCCFFFFFF);
-            item.setTypeface(focused ? Serif.bold(this) : Serif.regular(this));
+            // Keep font metrics stable so focusing does not resize the capsule.
             item.animate().scaleX(focused ? 1.06f : 1f).scaleY(focused ? 1.06f : 1f)
                     .setDuration(150).start();
         });

@@ -13,6 +13,7 @@ import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -58,6 +59,12 @@ public final class AppPickerActivity extends TvActivity {
     private String sortingPkg;
     private List<String> sortingBackup;
     private boolean changed;
+    private View confirmTarget;
+    private String confirmPkg;
+    private int confirmKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private long confirmDownTime;
+    private boolean confirmHeld, confirmCancelled, confirmDropsSorting;
+    private final Runnable confirmLongPress = this::performConfirmLongPress;
 
     /** 卸载模式：和「首页展示」是两套互不相干的选择，标记只存在这里。 */
     private boolean uninstallMode;
@@ -413,25 +420,19 @@ public final class AppPickerActivity extends TvActivity {
         names.put(entry.pkg, name);
         icons.put(entry.pkg, icon);
 
-        // 长按确认键（遥控器按住约 0.5 秒）进入排序模式；之后的 click 要吞掉
-        final boolean[] longPressed = {false};
-        tile.setOnKeyListener((v, keyCode, event) -> {
-            boolean center = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER;
-            if (center && event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 1
-                    && !uninstallMode) {
-                longPressed[0] = true;
-                startSorting(entry.pkg);
-                return true;
-            }
-            return false;
+        // Touch/accessibility long-clicks share the same action as the remote timer.
+        tile.setOnLongClickListener(v -> {
+            if (uninstallMode || sortingPkg != null) return false;
+            startSorting(entry.pkg);
+            return true;
         });
         tile.setOnClickListener(v -> {
-            if (longPressed[0]) { longPressed[0] = false; return; }
             if (sortingPkg != null) return;
             if (uninstallMode) toggleRemove(entry.pkg);
             else toggle(entry.pkg);
         });
         tile.setOnFocusChangeListener((v, focused) -> {
+            if (!focused && v == confirmTarget) cancelConfirmHold();
             applyTileStyle(tile, entry.pkg, focused);
             if (focused) scrollIntoView(tile);
         });
@@ -550,13 +551,13 @@ public final class AppPickerActivity extends TvActivity {
     private void endSorting(boolean keep) {
         if (sortingPkg == null) return;
         String pkg = sortingPkg;
-        sortingPkg = null;
         if (!keep && sortingBackup != null) {
             selected.clear();
             selected.addAll(sortingBackup);
             markChanged();
             rebuild();
         }
+        sortingPkg = null;
         sortingBackup = null;
         subtitle.setText("确认键 添加 / 移除　·　长按确认键 调整顺序　·　返回键 完成");
         refreshTiles();
@@ -580,29 +581,118 @@ public final class AppPickerActivity extends TvActivity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (isVolumeKey(event)) return super.dispatchKeyEvent(event);
+        int code = event.getKeyCode();
+        if (isConfirmKey(code) && handleConfirmKey(event)) return true;
+        if (confirmTarget != null && event.getAction() == KeyEvent.ACTION_DOWN) cancelConfirmHold();
         if (sortingPkg != null) {
-            if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
-            switch (event.getKeyCode()) {
+            switch (code) {
                 case KeyEvent.KEYCODE_DPAD_LEFT:
                 case KeyEvent.KEYCODE_DPAD_UP:
-                    moveInSelection(-1);
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) moveInSelection(-1);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
                 case KeyEvent.KEYCODE_DPAD_DOWN:
-                    moveInSelection(1);
-                    return true;
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER:
-                    endSorting(true);
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) moveInSelection(1);
                     return true;
                 case KeyEvent.KEYCODE_BACK:
-                    endSorting(false);
+                    if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                        endSorting(false);
+                    }
                     return true;
                 default:
-                    return true;
+                    break;
             }
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    private static boolean isConfirmKey(int code) {
+        return code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                || code == KeyEvent.KEYCODE_NUMPAD_ENTER || code == KeyEvent.KEYCODE_BUTTON_A;
+    }
+
+    /** Own the complete down/repeat/up sequence; repeat counts vary across TV remotes. */
+    private boolean handleConfirmKey(KeyEvent event) {
+        if (confirmTarget == null) {
+            if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return false;
+            View focus = getCurrentFocus();
+            String pkg = null;
+            for (Map.Entry<String, LinearLayout> entry : tiles.entrySet()) {
+                if (entry.getValue() == focus) { pkg = entry.getKey(); break; }
+            }
+            // Moving rebuilds the grid; allow confirming before its posted focus restore.
+            if (sortingPkg != null) {
+                pkg = sortingPkg;
+                focus = tiles.get(pkg);
+                if (focus != null) focus.requestFocus();
+            }
+            if (pkg == null || focus == null) return false; // Footer buttons keep normal clicks.
+            confirmTarget = focus;
+            confirmPkg = pkg;
+            confirmKeyCode = event.getKeyCode();
+            confirmDownTime = event.getDownTime();
+            confirmHeld = confirmCancelled = false;
+            confirmDropsSorting = sortingPkg != null;
+            focus.setPressed(true);
+            if (!uninstallMode && !confirmDropsSorting) {
+                handler.postDelayed(confirmLongPress, ViewConfiguration.getLongPressTimeout());
+            }
+        }
+        if (event.getKeyCode() != confirmKeyCode) return true;
+        if (event.isCanceled()) cancelConfirmHold();
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            // A repeat may arrive before the queued timer on a busy main thread.
+            if (event.getEventTime() - confirmDownTime >= ViewConfiguration.getLongPressTimeout()) {
+                performConfirmLongPress();
+            }
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            if (event.getEventTime() - confirmDownTime >= ViewConfiguration.getLongPressTimeout()) {
+                performConfirmLongPress();
+            }
+            View target = confirmTarget;
+            boolean click = !confirmHeld && !confirmCancelled && target.isFocused()
+                    && target.isAttachedToWindow();
+            boolean drop = confirmDropsSorting;
+            clearConfirmPress();
+            if (click) {
+                if (drop) endSorting(true);
+                else target.performClick();
+            }
+        }
+        return true;
+    }
+
+    private void performConfirmLongPress() {
+        if (confirmTarget == null || confirmHeld || confirmCancelled || confirmDropsSorting
+                || uninstallMode || !confirmTarget.isFocused() || !hasWindowFocus()) return;
+        confirmHeld = true;
+        handler.removeCallbacks(confirmLongPress);
+        confirmTarget.setPressed(false);
+        startSorting(confirmPkg);
+    }
+
+    private void cancelConfirmHold() {
+        handler.removeCallbacks(confirmLongPress);
+        confirmCancelled = true;
+        if (confirmTarget != null) confirmTarget.setPressed(false);
+    }
+
+    private void clearConfirmPress() {
+        cancelConfirmHold();
+        confirmTarget = null;
+        confirmPkg = null;
+        confirmKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) clearConfirmPress();
+    }
+
+    @Override protected void onPause() {
+        clearConfirmPress();
+        super.onPause();
     }
 
     private String labelOf(String pkg) {
@@ -639,6 +729,7 @@ public final class AppPickerActivity extends TvActivity {
     }
 
     @Override protected void onDestroy() {
+        clearConfirmPress();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
