@@ -60,8 +60,8 @@ final class VolumeOverlay {
         panel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         panel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(0xED1C2025);
-        background.setCornerRadius(dp(16));
+        background.setColor(0xF51C2025);
+        background.setCornerRadius(dp(8));
         background.setStroke(dp(1), 0x22FFFFFF);
         panel.setBackground(background);
         panel.setElevation(dp(12));

@@ -6,7 +6,16 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
-/** Shares foreground-only volume feedback across the app's fullscreen pages. */
+/**
+ * 全屏页面共用的音量提示宿主。
+ *
+ * <p>音量键在部分小米固件上会被系统组件提前消费，应用层收不到按键事件，
+ * 所以这里不靠按键驱动，而是由 {@link VolumeMonitor} 轮询系统媒体音量，
+ * 数值变化时才弹出提示。音量本身仍由系统调节，应用只读不写。
+ *
+ * <p>浮层挂在 {@code android.R.id.content} 上，只在 Activity 处于前台时轮询，
+ * 切到别的应用立即停止。
+ */
 abstract class TvActivity extends Activity {
     private VolumeOverlay volumeOverlay;
     private boolean resumed;
@@ -16,6 +25,9 @@ abstract class TvActivity extends Activity {
         View content = findViewById(android.R.id.content);
         if (content instanceof FrameLayout) {
             volumeOverlay = new VolumeOverlay(this, (FrameLayout) content);
+            // 首次启动时 onResume 早于 onPostCreate，这里补一次，
+            // 否则浮层建好后不会立刻开始轮询，要等下一次进出页面。
+            refreshVolumeFeedback();
         }
     }
 
