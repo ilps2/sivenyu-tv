@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -43,7 +42,7 @@ import java.util.Map;
  * 视觉：全屏壁纸（暗化）＋ 右上角时钟 ＋ 居中的横向应用行（焦点放大、白色描边、名称上浮）＋ 底部胶囊工具条。
  * 应用行来自 PackageManager 实时扫描，不写死任何包名。
  */
-public final class FrameHomeActivity extends Activity {
+public final class FrameHomeActivity extends TvActivity {
     private static final String TAG = "SivenyuHome";
     private static final String PREFS = "aptv-home";
     private static final String KEY_FOCUS_PKG = "focus-pkg";
@@ -344,11 +343,9 @@ public final class FrameHomeActivity extends Activity {
         });
     }
 
-    /**
-     * 注意：音量键在到达 Activity 之前就被系统消费（logcat 里是
-     * vol.VolumeDialogControl 在处理），所以应用层拦不到，也没法自绘音量条。
-     */
+    /** OEM firmware may consume volume keys first; TvActivity observes the resulting volume. */
     @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (isVolumeKey(event)) return super.dispatchKeyEvent(event);
         if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
             if (screensaverVisible) {
                 hideScreensaver();

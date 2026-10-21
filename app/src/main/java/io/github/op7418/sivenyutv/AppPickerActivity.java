@@ -1,6 +1,5 @@
 package io.github.op7418.sivenyutv;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -35,7 +34,7 @@ import java.util.Map;
  * <p>排序：焦点停在已选应用上<strong>长按确认键</strong>进入排序模式，
  * 之后 ← → 或 ↑ ↓ 调整它在序列里的位置，确认键放下、返回键取消。
  */
-public final class AppPickerActivity extends Activity {
+public final class AppPickerActivity extends TvActivity {
     static final String EXTRA_CHANGED = "changed";
 
     private static final int COLUMNS = 5;

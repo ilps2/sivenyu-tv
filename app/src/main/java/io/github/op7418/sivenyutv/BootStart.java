@@ -166,18 +166,24 @@ public final class BootStart {
                 .setItems(new String[]{
                         "小米屏保：" + (stockSaverDisabled(a) ? "已禁用" : "未禁用（会抢屏）"),
                         "自定义图标（banner）",
-                        "接管 Home 键"
+                        "接管 Home 键",
+                        "音量提示：" + (VolumeOverlay.enabled(a) ? "已开启" : "已关闭")
                 }, (dialog, index) -> {
                     if (index == 0) {
                         showStockSaverHelp(a);
                     } else if (index == 1) {
                         showBannerHelp(a);
-                    } else {
+                    } else if (index == 2) {
                         try {
                             a.startActivity(new Intent(a, HomeTakeoverActivity.class));
                         } catch (RuntimeException unavailable) {
                             showDefaultHomeHelp(a);
                         }
+                    } else {
+                        boolean enabled = !VolumeOverlay.enabled(a);
+                        VolumeOverlay.setEnabled(a, enabled);
+                        if (a instanceof TvActivity) ((TvActivity) a).refreshVolumeFeedback();
+                        Serif.toast(a, enabled ? "已开启音量提示" : "已关闭音量提示");
                     }
                 })
                 .setNegativeButton("返回", null)
