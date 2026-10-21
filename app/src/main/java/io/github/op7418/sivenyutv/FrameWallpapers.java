@@ -3,6 +3,7 @@ package io.github.op7418.sivenyutv;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -155,8 +156,23 @@ final class FrameWallpapers {
             }
             return image;
         }
-        try (InputStream stream = activity.getAssets().open("wallpapers/" + file)) {
+        return decodeAsset(activity, "wallpapers/" + file, thumbnail);
+    }
+
+    /** 壁纸与屏保共用内置图片采样，防止 4K 源文件占用过多位图内存。 */
+    static Bitmap decodeAsset(Context context, String assetPath, boolean thumbnail) throws Exception {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
+            BitmapFactory.decodeStream(stream, null, bounds);
+        }
+        int longest = Math.max(bounds.outWidth, bounds.outHeight);
+        int limit = thumbnail ? 360 : 1920;
+        int sample = 1;
+        while (longest > 0 && longest / sample > limit && sample < 8) sample *= 2;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
             BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
             Bitmap image = BitmapFactory.decodeStream(stream, null, options);
             if (image == null) throw new java.io.IOException("Image unavailable");

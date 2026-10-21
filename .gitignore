@@ -37,3 +37,15 @@ app/src/main/assets/wallpapers/bundled/*
 !app/src/main/assets/wallpapers/bundled/rSYsP5TlEAk-thumb.jpg
 !app/src/main/assets/wallpapers/bundled/vwFvhJf6u_I.jpg
 !app/src/main/assets/wallpapers/bundled/vwFvhJf6u_I-thumb.jpg
+# Four project-owner-requested wallpapers and their thumbnails only.
+!app/src/main/assets/wallpapers/generated/
+app/src/main/assets/wallpapers/generated/*
+!app/src/main/assets/wallpapers/generated/GENERATED-NOTICE.md
+!app/src/main/assets/wallpapers/generated/solid-black-4k.png
+!app/src/main/assets/wallpapers/generated/solid-black-thumb.png
+!app/src/main/assets/wallpapers/generated/solid-blue-4k.png
+!app/src/main/assets/wallpapers/generated/solid-blue-thumb.png
+!app/src/main/assets/wallpapers/generated/sky-blue-4k.png
+!app/src/main/assets/wallpapers/generated/sky-blue-thumb.png
+!app/src/main/assets/wallpapers/generated/glass-sea.png
+!app/src/main/assets/wallpapers/generated/glass-sea-thumb.png

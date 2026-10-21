@@ -14,7 +14,6 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.VideoView;
 
-import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -223,9 +222,7 @@ final class SaverView extends FrameLayout {
 
     private Bitmap decode(String item) throws Exception {
         if (item.startsWith("asset:")) {
-            try (InputStream stream = getContext().getAssets().open(item.substring(6))) {
-                return BitmapFactory.decodeStream(stream);
-            }
+            return FrameWallpapers.decodeAsset(getContext(), item.substring(6), false);
         }
         java.io.File file = new java.io.File(item);
         if (!file.isFile()) return null;
