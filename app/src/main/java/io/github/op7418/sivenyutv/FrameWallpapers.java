@@ -51,6 +51,7 @@ final class FrameWallpapers {
     private View returnFocusAnchor;
     private View cropAnchor;
     private UploadServer uploadServer;
+    private int uploadSession;
     private Dialog uploadDialog;
     private TextView uploadStatus;
     private AlertDialog intervalDialog;
@@ -524,8 +525,9 @@ final class FrameWallpapers {
         final java.io.File mediaDir = MediaLibrary.dir(activity);
 
         stopUploadServer();
+        final int session = uploadSession;
         uploadServer = new UploadServer(port, mediaDir, mediaDir, (file, video) -> handler.post(() -> {
-            if (uploadStatus == null) return;
+            if (destroyed || session != uploadSession || uploadStatus == null) return;
             if (video) {
                 uploadStatus.setText("已收到视频 " + file.getName() + "\n去「屏保内容」里勾选才会播放");
             } else {
@@ -600,6 +602,7 @@ final class FrameWallpapers {
     }
 
     private void stopUploadServer() {
+        uploadSession++;
         if (uploadServer != null) {
             uploadServer.stop();
             uploadServer = null;
