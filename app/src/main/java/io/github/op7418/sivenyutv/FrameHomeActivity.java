@@ -19,7 +19,9 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -30,6 +32,7 @@ import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -63,17 +66,30 @@ public final class FrameHomeActivity extends TvActivity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<View> tiles = new ArrayList<>();
+    private final List<AppCatalog.Entry> homeApps = new ArrayList<>();
+    private final Map<String, View> moveFrames = new HashMap<>();
     private final List<List<View>> tileRows = new ArrayList<>();
     private final List<TextView> dockItems = new ArrayList<>();
 
     private ImageView photo;
     private ImageView transition;
     private FrameWallpapers wallpapers;
+    private GlassDock glassDock;
     private LinearLayout row;
     private TextView clock;
     private TextView hint;
     private View lastTile;
     private boolean reloading;
+    private String movingPkg;
+    private List<AppCatalog.Entry> moveBackupApps;
+    private List<View> moveBackupTiles;
+    private View confirmTarget;
+    private String confirmPkg;
+    private int confirmKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private int swallowedKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private long confirmDownTime;
+    private boolean confirmHeld, confirmCancelled, confirmCommitsMove;
+    private final Runnable confirmLongPress = this::performConfirmLongPress;
 
     private FrameLayout screensaverLayer;
     private ImageView ssA;
@@ -133,7 +149,8 @@ public final class FrameHomeActivity extends TvActivity {
         FrameLayout.LayoutParams stageParams = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_VERTICAL);
         stageParams.bottomMargin = dp(40);
         root.addView(buildStage(), stageParams);
-        root.addView(buildDock(), dockParams());
+        root.addView(buildDock(scrim), dockParams());
+        wallpapers.setOnWallpaperChanged(glassDock::refreshBackdrop);
         root.addView(buildScreensaver(), new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 
@@ -182,19 +199,16 @@ public final class FrameHomeActivity extends TvActivity {
 
         hint = label("正在读取已安装应用…", 16, Serif.regular(this), 0x99FFFFFF);
         LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(-2, -2);
-        hintParams.leftMargin = dp(72);
+        hintParams.gravity = Gravity.CENTER_HORIZONTAL;
         hintParams.topMargin = dp(18);
         hint.setVisibility(View.GONE);
         stage.addView(hint, hintParams);
         return stage;
     }
 
-    private View buildDock() {
-        LinearLayout dock = new LinearLayout(this);
-        dock.setOrientation(LinearLayout.HORIZONTAL);
-        dock.setGravity(Gravity.CENTER_VERTICAL);
-        // 和图标区同一套逻辑：常态只有文字，胶囊只在获得焦点时出现
-        dock.setPadding(dp(10), dp(7), dp(10), dp(7));
+    private View buildDock(View scrim) {
+        GlassDock dock = new GlassDock(this, photo, scrim);
+        glassDock = dock;
 
         addDockItem(dock, "壁纸", () -> wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0)));
         addDockItem(dock, "应用", this::openPicker);
@@ -211,27 +225,8 @@ public final class FrameHomeActivity extends TvActivity {
         return dock;
     }
 
-    private void addDockItem(LinearLayout dock, String name, Runnable action) {
-        TextView item = label(name, 17, Serif.regular(this), 0xCCFFFFFF);
-        item.setGravity(Gravity.CENTER);
-        item.setPadding(dp(26), dp(10), dp(26), dp(10));
-        item.setShadowLayer(dp(6), 0, dp(2), 0xC0000000);
-        item.setFocusable(true);
-        item.setId(View.generateViewId());
-        item.setOnClickListener(v -> action.run());
-        final android.graphics.drawable.Drawable focusedGlass = new Glass(dp(24), 0x52, 0x22);
-        item.setOnFocusChangeListener((v, focused) -> {
-            item.setBackground(focused ? focusedGlass : null);
-            item.setTextColor(focused ? 0xFFFFFFFF : 0xCCFFFFFF);
-            item.setTypeface(focused ? Serif.bold(this) : Serif.regular(this));
-            item.animate().scaleX(focused ? 1.06f : 1f).scaleY(focused ? 1.06f : 1f)
-                    .setDuration(150).start();
-        });
-        dockItems.add(item);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
-        params.leftMargin = dp(6);
-        params.rightMargin = dp(6);
-        dock.addView(item, params);
+    private void addDockItem(GlassDock dock, String name, Runnable action) {
+        dockItems.add(dock.addItem(name, action));
     }
 
     // ---------------------------------------------------------------- 屏保
@@ -272,11 +267,13 @@ public final class FrameHomeActivity extends TvActivity {
     private void resetIdle() {
         handler.removeCallbacks(idleTick);
         int minutes = ScreenSaver.minutes(this);
-        if (minutes > 0 && !screensaverVisible) handler.postDelayed(idleTick, minutes * 60_000L);
+        if (minutes > 0 && !screensaverVisible && movingPkg == null) {
+            handler.postDelayed(idleTick, minutes * 60_000L);
+        }
     }
 
     private void showScreensaver() {
-        if (screensaverVisible || ScreenSaver.minutes(this) <= 0) return;
+        if (screensaverVisible || movingPkg != null || ScreenSaver.minutes(this) <= 0) return;
         if (SaverSelection.has(this)) {
             // 配置了本地图片/视频，交给独立屏保播放器（支持视频）
             if (saverLaunching) return;
@@ -344,20 +341,189 @@ public final class FrameHomeActivity extends TvActivity {
     }
 
     /** OEM firmware may consume volume keys first; TvActivity observes the resulting volume. */
-    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (isVolumeKey(event)) return super.dispatchKeyEvent(event);
-        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+        int code = event.getKeyCode();
+        if (code == swallowedKeyCode) {
+            if (event.getAction() == KeyEvent.ACTION_UP) swallowedKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+            return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
             if (screensaverVisible) {
                 hideScreensaver();
+                swallowedKeyCode = code;
                 return true;
             }
             resetIdle();
         }
+        if (isConfirmKey(code) && handleConfirmKey(event)) return true;
+        if (confirmTarget != null && event.getAction() == KeyEvent.ACTION_DOWN) cancelConfirmHold();
+        if (movingPkg != null) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                case KeyEvent.KEYCODE_DPAD_UP:
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) moveApp(code);
+                    return true;
+                case KeyEvent.KEYCODE_BACK:
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                        swallowedKeyCode = code;
+                        endMoving(false);
+                    }
+                    return true;
+                default:
+                    break;
+            }
+        }
         return super.dispatchKeyEvent(event);
     }
 
+    private static boolean isConfirmKey(int code) {
+        return code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                || code == KeyEvent.KEYCODE_NUMPAD_ENTER || code == KeyEvent.KEYCODE_BUTTON_A;
+    }
 
+    /** Consume one whole remote press, including repeats and the release after a hold. */
+    private boolean handleConfirmKey(KeyEvent event) {
+        if (confirmTarget == null) {
+            if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return false;
+            View focus = movingPkg == null ? getCurrentFocus() : tileFor(movingPkg);
+            if (focus == null || !tiles.contains(focus)) return false; // Dock uses normal clicks.
+            if (movingPkg != null) focus.requestFocus();
+            confirmTarget = focus;
+            confirmPkg = (String) focus.getTag();
+            confirmKeyCode = event.getKeyCode();
+            confirmDownTime = event.getDownTime();
+            confirmHeld = confirmCancelled = false;
+            confirmCommitsMove = movingPkg != null;
+            focus.setPressed(true);
+            if (!confirmCommitsMove) {
+                handler.postDelayed(confirmLongPress, ViewConfiguration.getLongPressTimeout());
+            }
+        }
+        if (event.getKeyCode() != confirmKeyCode) return true;
+        if (event.isCanceled()) cancelConfirmHold();
+        if (event.getEventTime() - confirmDownTime >= ViewConfiguration.getLongPressTimeout()) {
+            performConfirmLongPress();
+        }
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            View target = confirmTarget;
+            boolean click = !confirmHeld && !confirmCancelled && target.isFocused()
+                    && target.isAttachedToWindow();
+            boolean commit = confirmCommitsMove;
+            clearConfirmPress();
+            if (click) {
+                if (commit) endMoving(true);
+                else target.performClick();
+            }
+        }
+        return true;
+    }
 
+    private void performConfirmLongPress() {
+        if (confirmTarget == null || confirmHeld || confirmCancelled || confirmCommitsMove
+                || !confirmTarget.isFocused() || !hasWindowFocus()) return;
+        confirmHeld = true;
+        handler.removeCallbacks(confirmLongPress);
+        confirmTarget.setPressed(false);
+        startMoving(confirmPkg);
+    }
+
+    private void cancelConfirmHold() {
+        handler.removeCallbacks(confirmLongPress);
+        confirmCancelled = true;
+        if (confirmTarget != null) confirmTarget.setPressed(false);
+    }
+
+    private void clearConfirmPress() {
+        cancelConfirmHold();
+        confirmTarget = null;
+        confirmPkg = null;
+        confirmKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    }
+
+    private View tileFor(String pkg) {
+        for (View tile : tiles) if (pkg.equals(tile.getTag())) return tile;
+        return null;
+    }
+
+    private void startMoving(String pkg) {
+        if (movingPkg != null || reloading || screensaverVisible || !hasWindowFocus()) return;
+        if (homeApps.size() < 2) {
+            message("首页至少有两个应用时才能调整位置");
+            return;
+        }
+        View tile = tileFor(pkg);
+        if (tile == null) return;
+        movingPkg = pkg;
+        moveBackupApps = new ArrayList<>(homeApps);
+        moveBackupTiles = new ArrayList<>(tiles);
+        handler.removeCallbacks(idleTick);
+        updateMoveFrames();
+        tile.requestFocus();
+        hint.setTextColor(0xFFFFD9A0);
+        showHint("移动中 · 方向键调整 · 确认保存 · 返回取消", false);
+        hint.announceForAccessibility(hint.getText());
+    }
+
+    /** Swap with the actual neighboring cell; edges and empty cells do not wrap. */
+    private void moveApp(int keyCode) {
+        View movingTile = tileFor(movingPkg);
+        int from = tiles.indexOf(movingTile);
+        if (from < 0) return;
+        int to = from;
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                if (from % perRow > 0) to--;
+                break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (from % perRow < perRow - 1) to++;
+                break;
+            case KeyEvent.KEYCODE_DPAD_UP: to -= perRow; break;
+            case KeyEvent.KEYCODE_DPAD_DOWN: to += perRow; break;
+            default: return;
+        }
+        if (to == from || to < 0 || to >= tiles.size()) return;
+        Collections.swap(homeApps, from, to);
+        Collections.swap(tiles, from, to);
+        layoutTiles(movingPkg);
+    }
+
+    private void endMoving(boolean save) {
+        if (movingPkg == null) return;
+        String pkg = movingPkg;
+        if (save) {
+            List<String> order = new ArrayList<>();
+            for (AppCatalog.Entry entry : homeApps) order.add(entry.pkg);
+            HomeSelection.saveOrder(this, order);
+        } else {
+            homeApps.clear();
+            homeApps.addAll(moveBackupApps);
+            tiles.clear();
+            tiles.addAll(moveBackupTiles);
+        }
+        movingPkg = null;
+        moveBackupApps = null;
+        moveBackupTiles = null;
+        updateMoveFrames();
+        if (!save) layoutTiles(pkg);
+        handler.removeCallbacks(hideHint);
+        hint.setVisibility(View.GONE);
+        hint.setTextColor(0x99FFFFFF);
+        resetIdle();
+    }
+
+    private void updateMoveFrames() {
+        for (int i = 0; i < homeApps.size(); i++) {
+            AppCatalog.Entry entry = homeApps.get(i);
+            boolean moving = entry.pkg.equals(movingPkg);
+            View frame = moveFrames.get(entry.pkg);
+            if (frame != null) frame.setVisibility(moving ? View.VISIBLE : View.GONE);
+            tiles.get(i).setContentDescription(entry.label + " · " + entry.pkg
+                    + (moving ? " · 移动中" : ""));
+        }
+    }
 
     // ---------------------------------------------------------------- 应用列表
 
@@ -397,30 +563,44 @@ public final class FrameHomeActivity extends TvActivity {
     }
 
     private void renderRow(List<AppCatalog.Entry> all, String keepPackage) {
+        clearConfirmPress();
+        endMoving(false);
         row.removeAllViews();
         tiles.clear();
         tileRows.clear();
+        homeApps.clear();
+        moveFrames.clear();
 
         List<String> curated = HomeSelection.list(this);
-        List<AppCatalog.Entry> apps = new ArrayList<>();
+        Map<String, AppCatalog.Entry> byPkg = new HashMap<>();
+        for (AppCatalog.Entry entry : all) byPkg.put(entry.pkg, entry);
         if (curated == null) {
-            apps.addAll(all);
-        } else {
-            Map<String, AppCatalog.Entry> byPkg = new HashMap<>();
-            for (AppCatalog.Entry entry : all) byPkg.put(entry.pkg, entry);
-            for (String pkg : curated) {
-                AppCatalog.Entry entry = byPkg.get(pkg);
-                if (entry != null) apps.add(entry);
-            }
+            curated = new ArrayList<>();
+            for (AppCatalog.Entry entry : all) curated.add(entry.pkg);
+            curated = HomeSelection.order(this, curated);
         }
+        for (String pkg : curated) {
+            AppCatalog.Entry entry = byPkg.get(pkg);
+            if (entry != null) homeApps.add(entry);
+        }
+        chooseGridMetrics(homeApps.size());
+        for (AppCatalog.Entry entry : homeApps) tiles.add(buildTile(entry));
+        layoutTiles(keepPackage);
+        updateHint(all.isEmpty(), homeApps.isEmpty());
+    }
 
+    /** Reparent the existing cards so moving never decodes all banners again. */
+    private void layoutTiles(String keepPackage) {
+        for (View tile : tiles) {
+            if (tile.getParent() instanceof ViewGroup) ((ViewGroup) tile.getParent()).removeView(tile);
+        }
+        row.removeAllViews();
+        tileRows.clear();
         View focusTarget = null;
-        chooseGridMetrics(apps.size());
-        int rowsTotal = Math.max(1, (apps.size() + perRow - 1) / perRow);
-        // 行距给「聚焦放大 1.10×」留溢出量：卡片 126dp 高，放大后上下各溢出 6dp
+        int rowsTotal = Math.max(1, (tiles.size() + perRow - 1) / perRow);
         int rowGap = rowsTotal >= 3 ? 16 : 26;
         LinearLayout currentRow = null;
-        for (int i = 0; i < apps.size(); i++) {
+        for (int i = 0; i < tiles.size(); i++) {
             if (i % perRow == 0) {
                 currentRow = new LinearLayout(this);
                 currentRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -431,25 +611,22 @@ public final class FrameHomeActivity extends TvActivity {
                 row.addView(currentRow, rowParams);
                 tileRows.add(new ArrayList<>());
             }
-            AppCatalog.Entry entry = apps.get(i);
-            View tile = buildTile(entry);
+            View tile = tiles.get(i);
             currentRow.addView(tile, tileParams());
-            tiles.add(tile);
             tileRows.get(tileRows.size() - 1).add(tile);
-            if (keepPackage != null && keepPackage.equals(entry.pkg)) focusTarget = tile;
+            if (keepPackage != null && keepPackage.equals(tile.getTag())) focusTarget = tile;
         }
         if (focusTarget == null && !tiles.isEmpty()) focusTarget = tiles.get(0);
         lastTile = focusTarget;
         wireFocus();
-        // 嵌套布局里首次布局完成前 requestFocus 会失败，延后到布局稳定后再试一次
         final View target = focusTarget;
-        row.postDelayed(() -> {
-            if (target == null || isFinishing()) return;
+        if (target != null) target.requestFocus();
+        row.post(() -> {
+            if (target == null || target != lastTile || !target.isAttachedToWindow()
+                    || isFinishing() || !hasWindowFocus()) return;
             if (!target.isFocused()) target.requestFocus();
             updateTileDimming();
-        }, 160);
-
-        updateHint(all.isEmpty(), apps.isEmpty());
+        });
     }
 
     /**
@@ -481,7 +658,7 @@ public final class FrameHomeActivity extends TvActivity {
             return;
         }
         prefs.edit().putBoolean(KEY_HINT_SHOWN, true).apply();
-        showHint("点底部「应用」可以挑选首页显示哪些应用", true);
+        showHint("长按应用调整位置；点底部「应用」选择首页展示内容", true);
     }
 
     private void showHint(String text, boolean autoHide) {
@@ -516,6 +693,7 @@ public final class FrameHomeActivity extends TvActivity {
         item.setFocusable(true);
         item.setClipChildren(false);
         item.setId(View.generateViewId());
+        item.setTag(entry.pkg);
         item.setContentDescription(entry.label + " · " + entry.pkg);
 
         // 卡片用自绘 View 而不是 ImageView：圆角由 onDraw 里的 drawRoundRect 直接画，
@@ -553,7 +731,30 @@ public final class FrameHomeActivity extends TvActivity {
         name.setShadowLayer(dp(6), 0, dp(2), 0xC0000000);
         item.addView(name, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
 
+        View moveFrame = new View(this) {
+            private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Path outline = new Path();
+            {
+                stroke.setStyle(Paint.Style.STROKE);
+                stroke.setStrokeWidth(dp(2));
+                stroke.setColor(0xFFFFD9A0);
+            }
+
+            @Override protected void onDraw(Canvas canvas) {
+                float inset = stroke.getStrokeWidth() / 2f;
+                outline.reset();
+                outline.addRoundRect(inset, inset, getWidth() - inset, getHeight() - inset,
+                        radius - inset, radius - inset, Path.Direction.CW);
+                canvas.drawPath(outline, stroke);
+            }
+        };
+        moveFrame.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        moveFrame.setVisibility(View.GONE);
+        item.addView(moveFrame, new FrameLayout.LayoutParams(-1, -1));
+        moveFrames.put(entry.pkg, moveFrame);
+
         item.setOnFocusChangeListener((v, focused) -> {
+            if (!focused && v == confirmTarget) cancelConfirmHold();
             art.animate().alpha(focused ? 1f : 0f).setDuration(170).start();
             name.animate().alpha(focused ? 0f : 1f).setDuration(150).start();
             // 这里不再缩放 item：scale 和下面的 alpha 共用同一个 ViewPropertyAnimator，
@@ -567,16 +768,11 @@ public final class FrameHomeActivity extends TvActivity {
             v.post(this::updateTileDimming);
         });
         item.setOnClickListener(v -> {
+            if (movingPkg != null) return;
             if (!AppCatalog.launch(this, entry.pkg)) message(entry.label + " 打不开");
         });
         item.setOnLongClickListener(v -> {
-            try {
-                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        android.net.Uri.parse("package:" + entry.pkg))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            } catch (RuntimeException unavailable) {
-                message("没有应用信息页面");
-            }
+            startMoving(entry.pkg);
             return true;
         });
         return item;
@@ -663,6 +859,8 @@ public final class FrameHomeActivity extends TvActivity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        clearConfirmPress();
+        endMoving(false);
         setIntent(intent);
         if (intent != null) intent.removeExtra(BootStart.EXTRA_BOOT_LAUNCH);
         // 作为默认桌面时按 Home 键会走到这里：把焦点放回应用行，而不是停在工具条上
@@ -689,12 +887,19 @@ public final class FrameHomeActivity extends TvActivity {
      */
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus) return;
+        if (!hasFocus) {
+            clearConfirmPress();
+            swallowedKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+            endMoving(false);
+            return;
+        }
         View target = lastTile != null ? lastTile : (tiles.isEmpty() ? null : tiles.get(0));
         if (target != null && !target.isFocused()) target.requestFocus();
     }
 
     @Override protected void onPause() {
+        clearConfirmPress();
+        endMoving(false);
         handler.removeCallbacks(tick);
         handler.removeCallbacks(idleTick);
         if (wallpapers != null) wallpapers.pause();
@@ -702,6 +907,7 @@ public final class FrameHomeActivity extends TvActivity {
     }
 
     @Override protected void onDestroy() {
+        clearConfirmPress();
         handler.removeCallbacksAndMessages(null);
         ssWorker.shutdownNow();
         if (wallpapers != null) wallpapers.destroy();
@@ -709,6 +915,11 @@ public final class FrameHomeActivity extends TvActivity {
     }
 
     @Override public void onBackPressed() {
+        if (movingPkg != null) {
+            clearConfirmPress();
+            endMoving(false);
+            return;
+        }
         if (isDefaultHome()) {
             // 已是默认桌面，返回键不退出，避免黑屏。静默处理，不弹提示打扰。
             return;

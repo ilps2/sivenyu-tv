@@ -295,11 +295,7 @@ public final class SaverPickerActivity extends TvActivity {
         final List<String> gone = new ArrayList<>();
         java.io.InputStream stream = null;
         try {
-            try {
-                stream = getAssets().open("wallpapers/local/catalog.json");
-            } catch (java.io.FileNotFoundException absent) {
-                stream = getAssets().open("wallpapers/catalog.json");
-            }
+            stream = FrameWallpapers.openCatalog(this);
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int n;

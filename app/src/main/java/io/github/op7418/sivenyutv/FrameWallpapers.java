@@ -3,6 +3,7 @@ package io.github.op7418.sivenyutv;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -51,11 +52,12 @@ final class FrameWallpapers {
     private View returnFocusAnchor;
     private View cropAnchor;
     private UploadServer uploadServer;
+    private int uploadSession;
     private Dialog uploadDialog;
     private TextView uploadStatus;
     private AlertDialog intervalDialog;
+    private Runnable wallpaperChanged;
     private TextView autoButton, fixedButton, intervalButton, localButton, uploadButton, cropButton;
-    private TextView restoreButton;
 
     private static final String KEY_HIDDEN = "hidden-entries";
     static final int REQUEST_LOCAL = 77;
@@ -68,7 +70,7 @@ final class FrameWallpapers {
         prefs = activity.getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE);
         rotating = prefs.getBoolean("rotating", true);
         minutes = WallpaperCycle.minutes(prefs.getInt("minutes", WallpaperCycle.DEFAULT_MINUTES));
-        try (InputStream stream = openCatalog()) {
+        try (InputStream stream = openCatalog(activity)) {
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int n;
@@ -96,10 +98,10 @@ final class FrameWallpapers {
         load(current);
     }
 
-    private InputStream openCatalog() throws java.io.IOException {
-        try { return activity.getAssets().open("wallpapers/local/catalog.json"); }
+    static InputStream openCatalog(Context context) throws java.io.IOException {
+        try { return context.getAssets().open("wallpapers/local/catalog.json"); }
         catch (java.io.FileNotFoundException absent) {
-            return activity.getAssets().open("wallpapers/catalog.json");
+            return context.getAssets().open("wallpapers/catalog.json");
         }
     }
 
@@ -154,8 +156,23 @@ final class FrameWallpapers {
             }
             return image;
         }
-        try (InputStream stream = activity.getAssets().open("wallpapers/" + file)) {
+        return decodeAsset(activity, "wallpapers/" + file, thumbnail);
+    }
+
+    /** 壁纸与屏保共用内置图片采样，防止 4K 源文件占用过多位图内存。 */
+    static Bitmap decodeAsset(Context context, String assetPath, boolean thumbnail) throws Exception {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
+            BitmapFactory.decodeStream(stream, null, bounds);
+        }
+        int longest = Math.max(bounds.outWidth, bounds.outHeight);
+        int limit = thumbnail ? 360 : 1920;
+        int sample = 1;
+        while (longest > 0 && longest / sample > limit && sample < 8) sample *= 2;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
             BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
             Bitmap image = BitmapFactory.decodeStream(stream, null, options);
             if (image == null) throw new java.io.IOException("Image unavailable");
@@ -192,11 +209,11 @@ final class FrameWallpapers {
 
     /**
      * 同一个隐藏名单给屏保内容页读：在壁纸面板里移除过的内置壁纸，
-     * 屏保候选里也一起消失（否则两边不一致）。恢复内置后自然同时回来。
+     * 屏保候选里也一起消失（否则两边不一致）。
      */
-    static java.util.Set<String> hiddenBuiltinIds(Activity activity) {
-        return new java.util.HashSet<>(activity
-                .getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE)
+    static java.util.Set<String> hiddenBuiltinIds(Context context) {
+        return new java.util.HashSet<>(context
+                .getSharedPreferences("frame-wallpapers", Context.MODE_PRIVATE)
                 .getStringSet(KEY_HIDDEN, java.util.Collections.<String>emptySet()));
     }
 
@@ -253,6 +270,12 @@ final class FrameWallpapers {
 
     int size() { return entries.size(); }
 
+    void setOnWallpaperChanged(Runnable listener) { wallpaperChanged = listener; }
+
+    private void notifyWallpaperChanged() {
+        if (!destroyed && wallpaperChanged != null) wallpaperChanged.run();
+    }
+
     String entryFile(int index) {
         return index >= 0 && index < entries.size() ? entries.get(index).file : null;
     }
@@ -294,6 +317,7 @@ final class FrameWallpapers {
                 if (!hasImage || !active) {
                     photo.setImageBitmap(image);
                     WallpaperCrop.apply(photo, crop);
+                    notifyWallpaperChanged();
                 } else {
                     transition.setImageBitmap(image);
                     WallpaperCrop.apply(transition, crop);
@@ -303,6 +327,7 @@ final class FrameWallpapers {
                         WallpaperCrop.apply(photo, crop);
                         transition.setImageDrawable(null);
                         transition.setAlpha(0f);
+                        notifyWallpaperChanged();
                     }).start();
                 }
                 hasImage = true;
@@ -322,6 +347,7 @@ final class FrameWallpapers {
         float[] crop = WallpaperCrop.read(activity, entries.get(current).id);
         WallpaperCrop.apply(photo, crop);
         WallpaperCrop.apply(transition, crop);
+        notifyWallpaperChanged();
     }
 
     private void schedule() {
@@ -340,6 +366,7 @@ final class FrameWallpapers {
     }
     void destroy() {
         destroyed = true;
+        wallpaperChanged = null;
         stopUploadServer();
         generation++;
         pause();
@@ -370,33 +397,19 @@ final class FrameWallpapers {
         TextView title = label("壁纸设置", 24);
         panel.addView(title, new LinearLayout.LayoutParams(-1, dp(42)));
         // 第一行：轮播模式
-        LinearLayout modes = new LinearLayout(activity);
         autoButton = button("", () -> setMode(true));
         fixedButton = button("", () -> setMode(false));
         intervalButton = button("", this::chooseInterval);
-        for (TextView button : new TextView[]{autoButton, fixedButton, intervalButton}) {
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(40), 1);
-            p.rightMargin = dp(10);
-            modes.addView(button, p);
-        }
-        panel.addView(modes);
+        panel.addView(buttonRow(autoButton, fixedButton, intervalButton),
+                new LinearLayout.LayoutParams(-1, -2));
         // 第二行：操作按钮，和模式按钮同一套尺寸，不再单独挂在标题/说明行右边
-        LinearLayout actions = new LinearLayout(activity);
         cropButton = button("⇅ 画面位置", this::openCrop);
         localButton = button("＋ 本地图片", this::pickLocalImages);
         uploadButton = button("手机上传", this::showUploadDialog);
-        restoreButton = button("↺ 恢复内置", this::restoreBuiltins);
-        // 没有移除过内置壁纸时留空占位，避免加了又消失导致整行宽度跳动
-        restoreButton.setVisibility(hiddenIds().isEmpty() ? View.INVISIBLE : View.VISIBLE);
-        for (TextView button : new TextView[]{cropButton, localButton, uploadButton, restoreButton}) {
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(40), 1);
-            p.rightMargin = dp(10);
-            actions.addView(button, p);
-        }
         LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(-1, -2);
         actionsParams.topMargin = dp(8);
-        panel.addView(actions, actionsParams);
-        TextView note = label("点图片立即使用；长按格子可移除，移除过的可从「↺ 恢复内置」找回", 12);
+        panel.addView(buttonRow(cropButton, localButton, uploadButton), actionsParams);
+        TextView note = label("点图片立即使用；长按格子可移除壁纸", 12);
         note.setTextColor(0xB3FFFFFF);
         note.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(-1, dp(30));
@@ -469,7 +482,7 @@ final class FrameWallpapers {
         intervalButton.setNextFocusLeftId(fixedButton.getId());
         intervalButton.setNextFocusRightId(intervalButton.getId());
         intervalButton.setNextFocusDownId(uploadButton.getId());
-        // 第二行：操作四连
+        // 第二行：三等分，与上方模式按钮逐列对齐。
         cropButton.setNextFocusUpId(autoButton.getId());
         cropButton.setNextFocusLeftId(cropButton.getId());
         cropButton.setNextFocusRightId(localButton.getId());
@@ -477,17 +490,11 @@ final class FrameWallpapers {
         localButton.setNextFocusUpId(fixedButton.getId());
         localButton.setNextFocusLeftId(cropButton.getId());
         localButton.setNextFocusRightId(uploadButton.getId());
-        localButton.setNextFocusDownId(tiles.get(Math.min(1, tiles.size() - 1)).getId());
+        localButton.setNextFocusDownId(tiles.get(Math.min(2, tiles.size() - 1)).getId());
         uploadButton.setNextFocusUpId(intervalButton.getId());
         uploadButton.setNextFocusLeftId(localButton.getId());
-        // 「恢复内置」不可见时右到头就停住，否则会按几何位置跳到第一行去
-        uploadButton.setNextFocusRightId(restoreButton.getVisibility() == View.VISIBLE
-                ? restoreButton.getId() : uploadButton.getId());
-        uploadButton.setNextFocusDownId(tiles.get(Math.min(2, tiles.size() - 1)).getId());
-        restoreButton.setNextFocusUpId(intervalButton.getId());
-        restoreButton.setNextFocusLeftId(uploadButton.getId());
-        restoreButton.setNextFocusRightId(restoreButton.getId());
-        restoreButton.setNextFocusDownId(tiles.get(Math.min(3, tiles.size() - 1)).getId());
+        uploadButton.setNextFocusRightId(uploadButton.getId());
+        uploadButton.setNextFocusDownId(tiles.get(Math.min(4, tiles.size() - 1)).getId());
         panel.addView(grid);
         // 内置 5 张 + 本地最多 15 张，固定高度会溢出 1080p 屏，这里改成可滚动
         android.widget.ScrollView gridScroll = new android.widget.ScrollView(activity);
@@ -508,7 +515,7 @@ final class FrameWallpapers {
         dialog.getWindow().setLayout(dp(840), -2);
         final TextView initial = rotating ? autoButton : fixedButton;
         initial.requestFocus();
-        // 面板重建（删壁纸/恢复内置后 dismiss 再 show）时首次聚焦常常落空，补一次并留日志
+        // 面板重建（删壁纸后 dismiss 再 show）时首次聚焦常常落空，补一次并留日志
         dialog.getWindow().getDecorView().postDelayed(() -> {
             if (dialog == null || !dialog.isShowing()) return;
             View decor = dialog.getWindow().getDecorView();
@@ -534,8 +541,9 @@ final class FrameWallpapers {
         final java.io.File mediaDir = MediaLibrary.dir(activity);
 
         stopUploadServer();
+        final int session = uploadSession;
         uploadServer = new UploadServer(port, mediaDir, mediaDir, (file, video) -> handler.post(() -> {
-            if (uploadStatus == null) return;
+            if (destroyed || session != uploadSession || uploadStatus == null) return;
             if (video) {
                 uploadStatus.setText("已收到视频 " + file.getName() + "\n去「屏保内容」里勾选才会播放");
             } else {
@@ -585,15 +593,21 @@ final class FrameWallpapers {
         address.setGravity(Gravity.CENTER);
         panel.addView(address, new LinearLayout.LayoutParams(-1, dp(34)));
 
-        uploadStatus = label("等待上传…", 12);
+        uploadStatus = label("等待上传…　·　手机端可长按取消单个文件", 12);
         uploadStatus.setTextColor(0x99FFFFFF);
         uploadStatus.setGravity(Gravity.CENTER);
         panel.addView(uploadStatus, new LinearLayout.LayoutParams(-1, dp(48)));
 
+        TextView cancel = button("长按取消本次上传", () ->
+                Serif.toast(activity, "长按确认键可取消本次上传，已完成的文件保留"));
+        attachUploadCancelHold(cancel);
         TextView done = button("完成", sheet::dismiss);
-        LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(dp(150), dp(40));
-        doneParams.gravity = Gravity.CENTER_HORIZONTAL;
-        panel.addView(done, doneParams);
+        LinearLayout footer = new LinearLayout(activity);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        cancelParams.rightMargin = dp(10);
+        footer.addView(cancel, cancelParams);
+        footer.addView(done, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(40)));
 
         sheet.setContentView(panel);
         sheet.setOnDismissListener(d -> {
@@ -605,11 +619,71 @@ final class FrameWallpapers {
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         sheet.getWindow().setLayout(dp(460), -2);
+        cancel.setNextFocusRightId(done.getId());
+        done.setNextFocusLeftId(cancel.getId());
         done.requestFocus();
         uploadDialog = sheet;
     }
 
+    /** 保留正式版已有的电视端整场取消，同时使用完整暂存与清理逻辑。 */
+    private void cancelUpload() {
+        if (uploadServer == null) {
+            Serif.toast(activity, "上传已经关闭");
+            return;
+        }
+        stopUploadServer();
+        if (uploadStatus != null) {
+            uploadStatus.setText("本次上传已取消，已完成的文件保留\n关闭窗口后可重新扫码上传");
+            uploadStatus.setTextColor(0xFFFFD9A0);
+        }
+        Serif.toast(activity, "已取消本次上传，未完成文件会自动清理");
+    }
+
+    private void attachUploadCancelHold(TextView button) {
+        final boolean[] held = {false};
+        final Runnable action = () -> {
+            if (button.isFocused() && button.isAttachedToWindow()) {
+                held[0] = true;
+                cancelUpload();
+            }
+        };
+        button.setOnLongClickListener(v -> {
+            cancelUpload();
+            return true;
+        });
+        button.setOnKeyListener((v, key, event) -> {
+            boolean confirm = key == android.view.KeyEvent.KEYCODE_DPAD_CENTER
+                    || key == android.view.KeyEvent.KEYCODE_ENTER
+                    || key == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER;
+            if (!confirm) return false;
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                if (event.getRepeatCount() == 0) {
+                    handler.removeCallbacks(action);
+                    held[0] = false;
+                    handler.postDelayed(action, 700);
+                }
+                return true;
+            }
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) {
+                handler.removeCallbacks(action);
+                if (!held[0] && !event.isCanceled()) button.performClick();
+                held[0] = false;
+                return true;
+            }
+            return true;
+        });
+        View.OnFocusChangeListener appearance = button.getOnFocusChangeListener();
+        button.setOnFocusChangeListener((v, focused) -> {
+            if (appearance != null) appearance.onFocusChange(v, focused);
+            if (!focused) {
+                handler.removeCallbacks(action);
+                held[0] = false;
+            }
+        });
+    }
+
     private void stopUploadServer() {
+        uploadSession++;
         if (uploadServer != null) {
             uploadServer.stop();
             uploadServer = null;
@@ -628,7 +702,7 @@ final class FrameWallpapers {
         AlertDialog confirm = new AlertDialog.Builder(activity)
                 .setTitle(bundled ? "移除内置壁纸" : "删除壁纸")
                 .setMessage(bundled
-                        ? "「" + entry.name + "」会从壁纸列表移除，图片仍打包在应用内，之后可以点「恢复内置」找回来。"
+                        ? "「" + entry.name + "」会从壁纸和屏保列表移除，移除后无法在应用内恢复。"
                         : "「" + entry.name + "」会从应用内彻底删除，不可恢复。")
                 .setPositiveButton(bundled ? "移除" : "删除", (d, w) -> deleteEntry(entry))
                 .setNegativeButton("取消", null)
@@ -669,7 +743,7 @@ final class FrameWallpapers {
             current--;
         }
         Serif.toast(activity, bundled
-                ? "已移除「" + entry.name + "」，点「恢复内置」可找回"
+                ? "已移除「" + entry.name + "」"
                 : (deleted ? "已删除「" + entry.name + "」" : "删除失败，文件可能已被移除"));
 
         // 面板里的格子是打开时一次性铺好的，重开一次最省事
@@ -680,26 +754,21 @@ final class FrameWallpapers {
         }, 150);
     }
 
-    /** 把隐藏过的内置壁纸全部放回列表。 */
-    private void restoreBuiltins() {
-        prefs.edit().remove(KEY_HIDDEN).apply();
-        final String selectedId = entries.isEmpty() ? "" : entries.get(current).id;
-        rebuildEntries();
-        current = 0;
-        for (int i = 0; i < entries.size(); i++) if (entries.get(i).id.equals(selectedId)) current = i;
-        Serif.toast(activity, "内置壁纸已恢复");
-        final View anchor = returnFocusAnchor;
-        if (dialog != null && dialog.isShowing()) dialog.dismiss();
-        handler.postDelayed(() -> {
-            if (!destroyed) show(anchor);
-        }, 150);
+    /** Both control rows share the same widths and only have gaps between buttons. */
+    private LinearLayout buttonRow(TextView... buttons) {
+        LinearLayout row = new LinearLayout(activity);
+        for (int i = 0; i < buttons.length; i++) {
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            if (i < buttons.length - 1) p.rightMargin = dp(10);
+            row.addView(buttons[i], p);
+        }
+        return row;
     }
 
-    /** 网格第一行按上键：按列位置映射到第二行四个操作按钮，避免跳到「间隔」那种不对位的地方。 */
+    /** Map the five thumbnail centers to the three action buttons above them. */
     private View actionFor(int column) {
-        boolean canRestore = restoreButton != null && restoreButton.getVisibility() == View.VISIBLE;
-        View[] actions = {cropButton, localButton, uploadButton, canRestore ? restoreButton : uploadButton};
-        int index = Math.min(actions.length - 1, Math.max(0, column * actions.length / 5));
+        View[] actions = {cropButton, localButton, uploadButton};
+        int index = Math.min(actions.length - 1, Math.max(0, (2 * column + 1) * actions.length / 10));
         return actions[index];
     }
 

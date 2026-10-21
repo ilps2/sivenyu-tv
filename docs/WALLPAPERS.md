@@ -1,6 +1,7 @@
 # 内置壁纸与许可
 
-仅打包五张 Unsplash 照片。逐张原页面已核对作者与「Free to use under the Unsplash License」标记。
+默认打包九张壁纸：四张按项目所有者要求生成的壁纸，以及五张 Unsplash 照片。
+下表五张照片的原页面已核对作者与「Free to use under the Unsplash License」标记。
 
 图片遵循 [Unsplash License](https://unsplash.com/license)，不属于项目代码的 MIT 授权。可免费复制、修改及分发用于本桌面；不得将未作显著修改的照片单独出售，或汇编成与 Unsplash 相似或竞争的服务。
 
@@ -21,3 +22,16 @@
 处理：显示副本最长边 1920 像素、JPEG quality 85；缩略图 320 × 180、quality 78；启用 optimize/progressive。原图不变，副本不写入 EXIF 或 GPS 信息。默认每 5 分钟顺序轮播，固定选择功能不变。
 
 作者与来源也记录在 APK 内的 `assets/wallpapers/catalog.json`；资源大小、尺寸及校验值见 [媒体索引](../app/src/main/assets/wallpapers/bundled/MEDIA-INDEX.md)。
+
+## 新增纯色与玻璃海
+
+纯黑（#000000）、纯蓝（#0000FF）、天空蓝（#87CEEB）均为 3840 × 2160 程序生成 PNG；
+玻璃海为 OpenAI ImageGen 生成的 1672 × 941 PNG，保留原始分辨率，不标为 4K。
+四张排在默认列表前面，原五张照片保留，原有选中 ID、轮播偏好和移除记录不重置。
+
+这四张不使用 Unsplash 授权，来源与分发说明见
+[生成素材说明](../app/src/main/assets/wallpapers/generated/GENERATED-NOTICE.md)。
+内置 4K 图片运行时采样到最长边不超过 1920，缩略图为 320 × 180，避免额外占用电视内存。
+
+壁纸面板、屏保候选列表和未配置屏保时的默认播放列表共用同一个 catalog；
+默认屏保同时遵守内置壁纸移除记录。已手动选择的屏保文件列表保持原选择，不自动插入新图。
