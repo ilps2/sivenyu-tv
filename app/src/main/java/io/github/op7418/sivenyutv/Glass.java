@@ -23,7 +23,9 @@ final class Glass extends Drawable {
     private final float density;
     private final RectF body = new RectF(), insetBox = new RectF();
     private final Path shape = new Path(), rim = new Path(), inner = new Path();
+    private final Path refractionRing = new Path(), refractionInset = new Path();
     private final Paint backdrop = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint refractedEdge = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint film = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint lip = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -31,9 +33,11 @@ final class Glass extends Drawable {
     private final Paint innerEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix backdropMatrix = new Matrix();
+    private final Matrix edgeMatrix = new Matrix();
     private final int[] sourceLocation = new int[2], hostLocation = new int[2];
     private Bitmap cachedBackdrop;
     private BitmapShader backdropShader;
+    private BitmapShader edgeShader;
     private int alpha = 255;
 
     Glass(View host, ImageView wallpaper, View scrim) {
@@ -59,14 +63,21 @@ final class Glass extends Drawable {
         insetBox.set(body);
         insetBox.inset(dp(1.8f), dp(1.8f));
         contour(inner, insetBox);
+        insetBox.set(body);
+        insetBox.inset(dp(3.2f), dp(3.2f));
+        contour(refractionInset, insetBox);
+        refractionRing.reset();
+        refractionRing.setFillType(Path.FillType.EVEN_ODD);
+        refractionRing.addPath(shape);
+        refractionRing.addPath(refractionInset);
         film.setShader(new LinearGradient(0, body.top, 0, body.bottom,
-                new int[]{0x30FFFFFF, 0x17FFFFFF, 0x0BFFFFFF, 0x20FFFFFF},
+                new int[]{0x36FFFFFF, 0x15FFFFFF, 0x09FFFFFF, 0x27FFFFFF},
                 new float[]{0f, 0.22f, 0.62f, 1f}, Shader.TileMode.CLAMP));
         sheen.setShader(new LinearGradient(0, body.top, 0, body.centerY(),
                 0x15FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
         // Opposing highlights read as a curved transparent edge, rather than a white frame.
         edge.setShader(new LinearGradient(body.left, body.top, body.right, body.bottom,
-                new int[]{0xB3FFFFFF, 0x38FFFFFF, 0x12FFFFFF, 0x88FFFFFF},
+                new int[]{0xDBFFFFFF, 0x50FFFFFF, 0x18FFFFFF, 0xA6FFFFFF},
                 new float[]{0f, 0.34f, 0.66f, 1f}, Shader.TileMode.CLAMP));
         lip.setShader(new LinearGradient(0, body.top, 0, body.bottom,
                 0x16FFFFFF, 0x06FFFFFF, Shader.TileMode.CLAMP));
@@ -103,15 +114,21 @@ final class Glass extends Drawable {
             Canvas canvas = new Canvas(image);
             canvas.scale(w / (float) width, h / (float) height);
             wallpaper.draw(canvas);
+            // The lens admits more wallpaper light than the surrounding darkened home.
+            int shade = canvas.saveLayerAlpha(null, 176);
             scrim.draw(canvas);
+            canvas.restoreToCount(shade);
             int[] pixels = new int[w * h];
             image.getPixels(pixels, 0, w, 0, 0, w, h);
             blur(pixels, w, h);
             image.setPixels(pixels, 0, w, 0, 0, w, h);
             cachedBackdrop = image;
             backdropShader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            edgeShader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
             backdrop.setShader(backdropShader);
             backdrop.setAlpha(235);
+            refractedEdge.setShader(edgeShader);
+            refractedEdge.setAlpha(190);
         } catch (RuntimeException | OutOfMemoryError unavailable) {
             releaseBackdrop();
             Log.w("SivenyuGlass", "壁纸玻璃缓存不可用", unavailable);
@@ -160,7 +177,9 @@ final class Glass extends Drawable {
         // Let render-thread references expire naturally; never recycle a displayed bitmap.
         cachedBackdrop = null;
         backdropShader = null;
+        edgeShader = null;
         backdrop.setShader(null);
+        refractedEdge.setShader(null);
         invalidateSelf();
     }
 
@@ -179,7 +198,7 @@ final class Glass extends Drawable {
         if (backdropShader != null && cachedBackdrop != null) {
             wallpaper.getLocationInWindow(sourceLocation);
             host.getLocationInWindow(hostLocation);
-            float magnify = 1.035f;
+            float magnify = 1.065f;
             backdropMatrix.setScale(wallpaper.getWidth() * magnify / cachedBackdrop.getWidth(),
                     wallpaper.getHeight() * magnify / cachedBackdrop.getHeight());
             backdropMatrix.postTranslate((sourceLocation[0] - hostLocation[0]) * magnify
@@ -187,6 +206,17 @@ final class Glass extends Drawable {
                     (sourceLocation[1] - hostLocation[1]) * magnify + body.centerY() * (1f - magnify));
             backdropShader.setLocalMatrix(backdropMatrix);
             canvas.drawPath(shape, backdrop);
+            if (edgeShader != null) {
+                float edgeMagnify = 1.14f;
+                edgeMatrix.setScale(wallpaper.getWidth() * edgeMagnify / cachedBackdrop.getWidth(),
+                        wallpaper.getHeight() * edgeMagnify / cachedBackdrop.getHeight());
+                edgeMatrix.postTranslate((sourceLocation[0] - hostLocation[0]) * edgeMagnify
+                                + body.centerX() * (1f - edgeMagnify),
+                        (sourceLocation[1] - hostLocation[1]) * edgeMagnify
+                                + body.centerY() * (1f - edgeMagnify));
+                edgeShader.setLocalMatrix(edgeMatrix);
+                canvas.drawPath(refractionRing, refractedEdge);
+            }
         }
         canvas.drawPath(shape, film);
         canvas.drawPath(shape, sheen);
@@ -205,6 +235,7 @@ final class Glass extends Drawable {
 
     @Override public void setColorFilter(ColorFilter filter) {
         backdrop.setColorFilter(filter);
+        refractedEdge.setColorFilter(filter);
         film.setColorFilter(filter);
         sheen.setColorFilter(filter);
         edge.setColorFilter(filter);

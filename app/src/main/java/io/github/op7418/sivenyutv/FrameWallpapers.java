@@ -70,7 +70,7 @@ final class FrameWallpapers {
         prefs = activity.getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE);
         rotating = prefs.getBoolean("rotating", true);
         minutes = WallpaperCycle.minutes(prefs.getInt("minutes", WallpaperCycle.DEFAULT_MINUTES));
-        try (InputStream stream = openCatalog()) {
+        try (InputStream stream = openCatalog(activity)) {
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int n;
@@ -98,10 +98,10 @@ final class FrameWallpapers {
         load(current);
     }
 
-    private InputStream openCatalog() throws java.io.IOException {
-        try { return activity.getAssets().open("wallpapers/local/catalog.json"); }
+    static InputStream openCatalog(Context context) throws java.io.IOException {
+        try { return context.getAssets().open("wallpapers/local/catalog.json"); }
         catch (java.io.FileNotFoundException absent) {
-            return activity.getAssets().open("wallpapers/catalog.json");
+            return context.getAssets().open("wallpapers/catalog.json");
         }
     }
 
@@ -211,9 +211,9 @@ final class FrameWallpapers {
      * 同一个隐藏名单给屏保内容页读：在壁纸面板里移除过的内置壁纸，
      * 屏保候选里也一起消失（否则两边不一致）。
      */
-    static java.util.Set<String> hiddenBuiltinIds(Activity activity) {
-        return new java.util.HashSet<>(activity
-                .getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE)
+    static java.util.Set<String> hiddenBuiltinIds(Context context) {
+        return new java.util.HashSet<>(context
+                .getSharedPreferences("frame-wallpapers", Context.MODE_PRIVATE)
                 .getStringSet(KEY_HIDDEN, java.util.Collections.<String>emptySet()));
     }
 
@@ -593,15 +593,21 @@ final class FrameWallpapers {
         address.setGravity(Gravity.CENTER);
         panel.addView(address, new LinearLayout.LayoutParams(-1, dp(34)));
 
-        uploadStatus = label("等待上传…", 12);
+        uploadStatus = label("等待上传…　·　手机端可长按取消单个文件", 12);
         uploadStatus.setTextColor(0x99FFFFFF);
         uploadStatus.setGravity(Gravity.CENTER);
         panel.addView(uploadStatus, new LinearLayout.LayoutParams(-1, dp(48)));
 
+        TextView cancel = button("长按取消本次上传", () ->
+                Serif.toast(activity, "长按确认键可取消本次上传，已完成的文件保留"));
+        attachUploadCancelHold(cancel);
         TextView done = button("完成", sheet::dismiss);
-        LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(dp(150), dp(40));
-        doneParams.gravity = Gravity.CENTER_HORIZONTAL;
-        panel.addView(done, doneParams);
+        LinearLayout footer = new LinearLayout(activity);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        cancelParams.rightMargin = dp(10);
+        footer.addView(cancel, cancelParams);
+        footer.addView(done, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(40)));
 
         sheet.setContentView(panel);
         sheet.setOnDismissListener(d -> {
@@ -613,8 +619,67 @@ final class FrameWallpapers {
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         sheet.getWindow().setLayout(dp(460), -2);
+        cancel.setNextFocusRightId(done.getId());
+        done.setNextFocusLeftId(cancel.getId());
         done.requestFocus();
         uploadDialog = sheet;
+    }
+
+    /** 保留正式版已有的电视端整场取消，同时使用完整暂存与清理逻辑。 */
+    private void cancelUpload() {
+        if (uploadServer == null) {
+            Serif.toast(activity, "上传已经关闭");
+            return;
+        }
+        stopUploadServer();
+        if (uploadStatus != null) {
+            uploadStatus.setText("本次上传已取消，已完成的文件保留\n关闭窗口后可重新扫码上传");
+            uploadStatus.setTextColor(0xFFFFD9A0);
+        }
+        Serif.toast(activity, "已取消本次上传，未完成文件会自动清理");
+    }
+
+    private void attachUploadCancelHold(TextView button) {
+        final boolean[] held = {false};
+        final Runnable action = () -> {
+            if (button.isFocused() && button.isAttachedToWindow()) {
+                held[0] = true;
+                cancelUpload();
+            }
+        };
+        button.setOnLongClickListener(v -> {
+            cancelUpload();
+            return true;
+        });
+        button.setOnKeyListener((v, key, event) -> {
+            boolean confirm = key == android.view.KeyEvent.KEYCODE_DPAD_CENTER
+                    || key == android.view.KeyEvent.KEYCODE_ENTER
+                    || key == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER;
+            if (!confirm) return false;
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                if (event.getRepeatCount() == 0) {
+                    handler.removeCallbacks(action);
+                    held[0] = false;
+                    handler.postDelayed(action, 700);
+                }
+                return true;
+            }
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) {
+                handler.removeCallbacks(action);
+                if (!held[0] && !event.isCanceled()) button.performClick();
+                held[0] = false;
+                return true;
+            }
+            return true;
+        });
+        View.OnFocusChangeListener appearance = button.getOnFocusChangeListener();
+        button.setOnFocusChangeListener((v, focused) -> {
+            if (appearance != null) appearance.onFocusChange(v, focused);
+            if (!focused) {
+                handler.removeCallbacks(action);
+                held[0] = false;
+            }
+        });
     }
 
     private void stopUploadServer() {
