@@ -2,7 +2,7 @@
 
 - Change-Id: `guizang-tv-20261020-public-release`
 - 执行者：Codex
-- 授权：用户要求将当前电视桌面开源到 `op7418/sivenyu-tv`。
+- 授权：用户要求将当前电视桌面开源到 `ilps2/sivenyu-tv`。
 
 ## 范围
 

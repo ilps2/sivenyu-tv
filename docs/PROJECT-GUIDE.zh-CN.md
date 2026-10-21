@@ -16,18 +16,19 @@
 
 因此，这个版本将 **PlayStation 5 和 Apple TV 的 HDMI 入口与应用并列**，配上中文大字列表和默认开启的照片轮播。安装后作为普通应用使用，保留小米原桌面及系统组件。
 
-项目地址：[op7418/sivenyu-tv](https://github.com/op7418/sivenyu-tv)
+项目地址：[ilps2/sivenyu-tv](https://github.com/ilps2/sivenyu-tv)
 
-下载地址：[v0.2.0 安装包](https://github.com/op7418/sivenyu-tv/releases/tag/v0.2.0)
+下载地址：[v0.2.0 安装包](https://github.com/ilps2/sivenyu-tv/releases/tag/v0.2.0)
 
-## 2. 和前两个项目是什么关系？
+## 2. 和前几个项目是什么关系？
 
-斯文鱼TV有两条明确的来源：
+斯文鱼TV有三条明确的来源，逐层说明：
 
-- **代码起点：**[Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)。先在这个 Android TV 项目的基础上做本地定制，再整理出当前公开版。
+- **代码源头：**[Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)。本项目绝大部分代码来自这里，按 MIT 要求保留了原始版权声明。
+- **实际起点：归藏电视。** 归藏电视把上面那个项目整理成了面向国内小米电视的可用版本，并公开发布了教程文章与 APK。本项目初期是在其发布包的基础上调试与改造的，界面与交互随后完全重写。**感谢归藏电视作者把开源项目整理成了能直接上手的版本，让这个项目有了起步的基础。**本项目与归藏电视无隶属关系，名称、包名与代码均已独立，未使用其商标资源。
 - **设计参考：**[nthnclrk/CleanFrame](https://github.com/nthnclrk/CleanFrame)。参考它的照片背景、大字纵向列表和克制的焦点表现；当前 Android 界面由原生 Java 实现，没有移植它的 Tizen 运行代码，也没有附带它的照片。
 
-下面比较的是本次开发时实际参考的版本：[cleanYourTV `69c93b6`](https://github.com/Gathin23/cleanyourtv/tree/69c93b66a75c70a9e386adff327b6a51c12addc5)、[CleanFrame `fa537d1`](https://github.com/nthnclrk/CleanFrame/tree/fa537d1892b71d2de2bf94c24cbff3812e9f70d5)，以及斯文鱼TV v0.2.0。它不是对上游后续版本的实时评测。
+下面比较的是本次开发时实际参考的版本：[cleanYourTV `69c93b6`](https://github.com/Gathin23/cleanyourtv/tree/69c93b66a75c70a9e386adff327b6a51c12addc5)、[CleanFrame `fa537d1`](https://github.com/nthnclrk/CleanFrame/tree/fa537d1892b71d2de2bf94c24cbff3812e9f70d5)，以及归藏电视 v0.2.0。它不是对上游后续版本的实时评测。
 
 | 维度 | cleanYourTV | CleanFrame | 斯文鱼TV |
 | --- | --- | --- | --- |
@@ -132,7 +133,7 @@ v0.2.0 新增实验性开机自动进入，需要适配机型、一次 ADB 配�
 
 ### 方法一：使用电视支持的本地安装方式
 
-1. 打开 [v0.2.0 发布页](https://github.com/op7418/sivenyu-tv/releases/tag/v0.2.0)。
+1. 打开 [v0.2.0 发布页](https://github.com/ilps2/sivenyu-tv/releases/tag/v0.2.0)。
 2. 在 Assets 中下载 **`sivenyu-tv.apk`**。`Source code` 是源码压缩包，不能直接当作电视应用安装。
 3. 按电视固件支持的方式，通过 U 盘或本地文件传输把 APK 送到电视。
 4. 打开 APK，按系统提示允许对应安装来源并完成安装。不同固件对文件管理器及第三方安装的限制不同。
@@ -227,7 +228,7 @@ ADB 只用于安装或调试。完成后可以断开连接、关闭电视调试�
 以下为 macOS / Linux shell 示例，环境路径替换为本机实际位置：
 
 ```sh
-git clone https://github.com/op7418/sivenyu-tv.git
+git clone https://github.com/ilps2/sivenyu-tv.git
 cd sivenyu-tv
 export ANDROID_HOME=/path/to/Android/sdk
 export JAVA_HOME=/path/to/jdk-17

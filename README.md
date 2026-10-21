@@ -2,9 +2,10 @@
 
 一个给国内小米电视用的简洁桌面：大字、卡片、壁纸与屏保，以及常用应用的直达入口。
 
-**这是一个二次开发项目。** 起步于 [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)（MIT License）的本地定制，
-在此基础上重构了整套界面与媒体管理。上游作者与原始版权归原作者所有，本项目与其无隶属关系。
-完整来源、改动范围与许可归属见 [NOTICE.md](NOTICE.md)。
+**这是一个二次开发项目。** 代码源头是 [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)（MIT License），
+实际起点是**归藏电视**发布的教程与整理包，本项目在此基础上重构了整套界面与媒体管理。
+上游作者与原始版权归原作者所有，本项目与归藏电视、cleanyourtv 均无隶属关系。
+完整来源链条、改动范围与许可归属见 [NOTICE.md](NOTICE.md)。
 
 ## 界面
 
@@ -48,7 +49,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/op7418/sivenyu-tv/releases) 下载 APK，
+从 [Releases](https://github.com/ilps2/sivenyu-tv/releases) 下载 APK，
 通过电视支持的本地安装方式安装。也可以在开启电视 ADB 调试、电脑连同一网络后：
 
 ```sh
@@ -78,7 +79,7 @@ adb install -r sivenyu-tv.apk
 或用 Android Studio 打开并选择本地 Gradle 8.9。
 
 ```sh
-git clone https://github.com/op7418/sivenyu-tv.git
+git clone https://github.com/ilps2/sivenyu-tv.git
 cd sivenyu-tv
 gradle :app:assembleDebug
 ```
@@ -124,8 +125,15 @@ gradle :app:assembleDebug
 
 ## 来源与致谢
 
-- [Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv) —— MIT License，初始工程基础
-- [nthnclrk/CleanFrame](https://github.com/nthnclrk/CleanFrame) —— Nathan Clark，界面方向参考
-  （未移植其 Tizen 运行代码，也未附带其照片）
+这个项目站在几个人的工作之上，在这里明确说清各自的贡献：
 
-代码 MIT 许可并保留上游署名，详细来源见 [NOTICE.md](NOTICE.md)。
+- **[Gathin23/cleanyourtv](https://github.com/Gathin23/cleanyourtv)** —— MIT License，**代码源头**。
+  本项目的绝大部分代码来自这里，按 MIT 要求保留了原始版权声明。
+- **归藏电视** —— 提供了面向国内小米电视的**教程文章与整理后的 APK**，是本次二次开发的实际起点。
+  本项目在其发布包的基础上调试改造，界面与交互随后完全重写。
+  感谢归藏电视作者把开源项目整理成了能直接上手的版本，让这个项目有了起步的基础。
+  *（本项目与归藏电视无隶属关系，名称、包名与代码均已独立，未使用其商标资源。）*
+- **[nthnclrk/CleanFrame](https://github.com/nthnclrk/CleanFrame)** —— Nathan Clark，**界面方向参考**。
+  未移植其 Tizen 运行代码，也未附带其照片。
+
+代码 MIT 许可并保留上游署名，完整来源链条见 [NOTICE.md](NOTICE.md)。
