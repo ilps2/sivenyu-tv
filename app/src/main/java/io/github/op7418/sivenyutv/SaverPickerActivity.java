@@ -78,8 +78,14 @@ public final class SaverPickerActivity extends TvActivity {
         scroller = new ScrollView(this);
         scroller.setVerticalScrollBarEnabled(false);
         scroller.setClipToPadding(false);
+        // 聚焦时格子会放大 1.05 倍，必须让父容器别裁剪，否则左上/右下那几格的白框
+        // 只会剩半条边（边缘格子尤其明显）。再留一圈 padding 给放大后的余量。
+        scroller.setClipChildren(false);
         grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
+        grid.setClipChildren(false);
+        int breathing = dp(10);
+        grid.setPadding(breathing, breathing, breathing, breathing);
         scroller.addView(grid, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1f));
 
