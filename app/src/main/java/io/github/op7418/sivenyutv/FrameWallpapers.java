@@ -157,6 +157,7 @@ final class FrameWallpapers {
             android.util.Log.e("TvHome.Wallpaper", "Catalog unavailable", error);
         }
         rebuildEntries();
+        migrateCropKeys();
         String id = prefs.getString("selected", "");
         for (int i = 0; i < entries.size(); i++) if (entries.get(i).id.equals(id)) current = i;
         if (entries.isEmpty()) {
@@ -307,6 +308,16 @@ final class FrameWallpapers {
     }
 
     /** 按 catalog + 隐藏名单 + 本地图片重建列表。 */
+    /** 把旧版按 Entry.id 存的构图参数搬到相对标识下（只搬一次）。 */
+    private void migrateCropKeys() {
+        if (prefs.getBoolean("crop-scheme-v2", false)) return;
+        for (Entry entry : entries) {
+            WallpaperCrop.migrateKey(activity, entry.id, poolKey(entry));
+        }
+        prefs.edit().putBoolean("crop-scheme-v2", true).apply();
+        android.util.Log.i("TvHome.Wallpaper", "构图键已迁移到相对标识，共 " + entries.size() + " 项");
+    }
+
     private void rebuildEntries() {
         entries.clear();
         final java.util.Set<String> hidden = hiddenIds();
@@ -368,8 +379,8 @@ final class FrameWallpapers {
         handler.removeCallbacks(rotate);
         final int request = ++generation;
         final Entry entry = entries.get(index);
-        final String entryId = entry.id;
-        final float[] crop = WallpaperCrop.read(activity, entryId);
+        // 构图键用相对标识，屏保侧才能读到同一份参数
+        final float[] crop = WallpaperCrop.read(activity, poolKey(entry));
         loading = true;
         if (entry.video) {
             loadVideo(index, entry, request);
@@ -481,7 +492,7 @@ final class FrameWallpapers {
             resetPhotoScale();
             return;
         }
-        float[] crop = WallpaperCrop.read(activity, entries.get(current).id);
+        float[] crop = WallpaperCrop.read(activity, poolKey(entries.get(current)));
         WallpaperCrop.apply(photo, crop);
         WallpaperCrop.apply(transition, crop);
         notifyWallpaperChanged();
@@ -932,11 +943,11 @@ final class FrameWallpapers {
         boolean deleted = true;
         if (bundled) {
             hideEntry(entry);
-            WallpaperCrop.clear(activity, entry.id);
+            WallpaperCrop.clear(activity, poolKey(entry));
         } else {
             java.io.File file = new java.io.File(userDir(), entry.file.substring(5));
             deleted = file.delete();
-            WallpaperCrop.clear(activity, entry.id);
+            WallpaperCrop.clear(activity, poolKey(entry));
             android.util.Log.i("TvHome.Wallpaper",
                     "删除壁纸 " + entry.name + " -> " + deleted + " (" + file.getAbsolutePath() + ")");
         }
@@ -1002,7 +1013,7 @@ final class FrameWallpapers {
             if (destroyed) return;
             try {
                 android.content.Intent intent = new android.content.Intent(activity, WallpaperCropActivity.class);
-                intent.putExtra(WallpaperCropActivity.EXTRA_ID, entry.id);
+                intent.putExtra(WallpaperCropActivity.EXTRA_ID, poolKey(entry));
                 intent.putExtra(WallpaperCropActivity.EXTRA_FILE, entry.file);
                 intent.putExtra(WallpaperCropActivity.EXTRA_LABEL, entry.name);
                 activity.startActivityForResult(intent, REQUEST_CROP);

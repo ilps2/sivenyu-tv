@@ -1,6 +1,7 @@
 package io.github.op7418.sivenyutv;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Matrix;
 import android.graphics.drawable.Drawable;
 import android.widget.ImageView;
@@ -57,6 +58,37 @@ final class WallpaperCrop {
 
     static boolean isCustom(Context context, String id) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(id);
+    }
+
+    /**
+     * 跨界面统一的构图键。
+     *
+     * <p>壁纸侧用 {@code Entry.id}、屏保侧只有路径，两边必须落到同一个键上，
+     * 否则「改了壁纸的画面位置，屏保还是原来那样」。规则与
+     * {@code FrameWallpapers.poolKey} 一致：本地 {@code file:<文件名>}、
+     * 内置 {@code asset:<相对 assets 的路径>}。
+     */
+    static String keyFor(String path) {
+        if (path == null || path.isEmpty()) return "";
+        if (path.startsWith("asset:")) {
+            String rest = path.substring(6);
+            if (rest.startsWith("wallpapers/")) rest = rest.substring(11);
+            return "asset:" + rest;
+        }
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return "file:" + (slash >= 0 ? path.substring(slash + 1) : path);
+    }
+
+    /**
+     * 旧版按 {@code Entry.id}（{@code user-xxx.jpg} / catalog id）存，
+     * v2 起按相对标识存。启动时把旧键搬到新键，搬过的不会重复搬。
+     */
+    static void migrateKey(Context context, String from, String to) {
+        if (from == null || to == null || from.equals(to)) return;
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String raw = prefs.getString(from, null);
+        if (raw == null || prefs.contains(to)) return;
+        prefs.edit().putString(to, raw).apply();
     }
 
     /**

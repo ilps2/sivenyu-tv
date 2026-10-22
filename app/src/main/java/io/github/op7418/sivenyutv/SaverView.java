@@ -162,18 +162,21 @@ final class SaverView extends FrameLayout {
                     handler.postDelayed(advance, 400L);
                     return;
                 }
-                crossFade(image);
+                crossFade(image, item);
                 handler.postDelayed(advance, IMAGE_HOLD_MS);
             });
         });
     }
 
-    private void crossFade(Bitmap image) {
+    private void crossFade(Bitmap image, String item) {
         ImageView incoming = front.getAlpha() >= 0.5f ? back : front;
         ImageView outgoing = incoming == front ? back : front;
 
         Bitmap stale = incoming == front ? frontBitmap : backBitmap;
         incoming.setImageBitmap(image);
+        // 和壁纸用同一份构图参数：改了「画面位置」屏保也要跟着变，
+        // 否则同一张图在桌面和屏保里的取景不一致。
+        WallpaperCrop.apply(incoming, WallpaperCrop.read(getContext(), WallpaperCrop.keyFor(item)));
         if (incoming == front) frontBitmap = image; else backBitmap = image;
         if (stale != null && stale != image && !stale.isRecycled()) stale.recycle();
 
