@@ -166,15 +166,20 @@ final class MediaLibrary {
 
     /**
      * 取指定时间点的一帧；先用缩放到目标尺寸的接口，个别编码器不支持时退回整帧。
+     *
+     * <p>{@code getScaledFrameAtTime} 是 API 27 才有的，本项目 minSdk 是 26，
+     * 必须带版本判断（否则 lint 的 NewApi 检查会让 CI 直接失败）。
      */
     private static android.graphics.Bitmap grab(android.media.MediaMetadataRetriever retriever,
                                                 long position, int width, int height) {
-        try {
-            android.graphics.Bitmap scaled = retriever.getScaledFrameAtTime(position,
-                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, width, height);
-            if (scaled != null) return scaled;
-        } catch (RuntimeException unavailable) {
-            // 继续走整帧回退
+        if (android.os.Build.VERSION.SDK_INT >= 27) {
+            try {
+                android.graphics.Bitmap scaled = retriever.getScaledFrameAtTime(position,
+                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, width, height);
+                if (scaled != null) return scaled;
+            } catch (RuntimeException unavailable) {
+                // 继续走整帧回退
+            }
         }
         try {
             return retriever.getFrameAtTime(position,
