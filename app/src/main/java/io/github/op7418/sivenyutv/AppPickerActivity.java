@@ -1,6 +1,8 @@
 package io.github.op7418.sivenyutv;
 
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -19,9 +21,12 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -36,7 +41,7 @@ public final class AppPickerActivity extends TvActivity {
     static final String EXTRA_CHANGED = "changed";
 
     private static final int COLUMNS = 5;
-    private static final int TILE_HEIGHT = 130;
+    private static final int TILE_HEIGHT = 152;
     private static final int REQ_UNINSTALL = 91;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -45,6 +50,7 @@ public final class AppPickerActivity extends TvActivity {
     private final Map<String, LinearLayout> tiles = new LinkedHashMap<>();
     private final Map<String, TextView> names = new LinkedHashMap<>();
     private final Map<String, ImageView> icons = new LinkedHashMap<>();
+    private final Map<String, InstallInfo> installInfo = new LinkedHashMap<>();
 
     private GridLayout grid;
     private ScrollView scroller;
@@ -53,6 +59,8 @@ public final class AppPickerActivity extends TvActivity {
     private TextView title;
     private LinearLayout footerBar;
     private TextView uninstallButton;
+    private TextView currentAppInfo;
+    private TextView focusedAppInfo;
     private boolean changed;
 
     /** 卸载模式：和「首页展示」是两套互不相干的选择，标记只存在这里。 */
@@ -78,6 +86,11 @@ public final class AppPickerActivity extends TvActivity {
 
         root.addView(buildHeader());
 
+        currentAppInfo = label("当前桌面：正在读取安装信息…", 12,
+                Serif.regular(this), 0xFF9BD1FF);
+        currentAppInfo.setPadding(0, 0, 0, dp(8));
+        root.addView(currentAppInfo, new LinearLayout.LayoutParams(-1, -2));
+
         scroller = new ScrollView(this);
         scroller.setVerticalScrollBarEnabled(false);
         scroller.setClipToPadding(false);
@@ -85,6 +98,12 @@ public final class AppPickerActivity extends TvActivity {
         grid.setColumnCount(COLUMNS);
         scroller.addView(grid, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        focusedAppInfo = label("选中应用可查看版本、安装日期和完整包名", 12,
+                Serif.regular(this), 0xBFFFFFFF);
+        focusedAppInfo.setMinLines(3);
+        focusedAppInfo.setPadding(dp(5), dp(8), dp(5), 0);
+        root.addView(focusedAppInfo, new LinearLayout.LayoutParams(-1, -2));
 
         root.addView(buildFooter());
         setContentView(root);
@@ -101,7 +120,7 @@ public final class AppPickerActivity extends TvActivity {
         texts.setOrientation(LinearLayout.VERTICAL);
         title = label("选择首页应用", 28, Serif.light(this), 0xFFFFFFFF);
         texts.addView(title);
-        subtitle = label("确认键 添加 / 移除　·　长按 应用信息　·　返回键 完成", 13,
+        subtitle = label("确认键 添加 / 移除　·　首页长按可排序　·　返回键 完成", 13,
                 Serif.regular(this), 0x8AFFFFFF);
         LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(-2, -2);
         subParams.topMargin = dp(6);
@@ -208,7 +227,7 @@ public final class AppPickerActivity extends TvActivity {
         uninstallMode = false;
         toRemove.clear();
         title.setText("选择首页应用");
-        subtitle.setText("确认键 添加 / 移除　·　长按 应用信息　·　返回键 完成");
+        subtitle.setText("确认键 添加 / 移除　·　首页长按可排序　·　返回键 完成");
         fillFooter();
         refreshTiles();
         focusFirstTile();
@@ -326,7 +345,20 @@ public final class AppPickerActivity extends TvActivity {
         if (firstTime) subtitle.setText("当前首页显示全部应用　·　勾选后只显示你选的这几个");
         new Thread(() -> {
             final List<AppCatalog.Entry> loaded = AppCatalog.load(getApplicationContext());
+            final Map<String, InstallInfo> details = new LinkedHashMap<>();
+            PackageManager pm = getPackageManager();
+            for (AppCatalog.Entry entry : loaded) {
+                details.put(entry.pkg, InstallInfo.read(pm, entry.pkg));
+            }
+            final InstallInfo current = InstallInfo.read(pm, getPackageName());
+            final String currentLabel = getApplicationInfo().loadLabel(pm).toString();
             handler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                installInfo.clear();
+                installInfo.putAll(details);
+                currentAppInfo.setText("当前正在使用：" + currentLabel + "　·　" + current.version()
+                        + "　·　安装 " + time(current.installed)
+                        + "\n更新 " + time(current.updated) + "　·　包名：" + getPackageName());
                 apps.clear();
                 apps.addAll(loaded);
                 rebuild();
@@ -363,6 +395,7 @@ public final class AppPickerActivity extends TvActivity {
 
         List<AppCatalog.Entry> ordered = orderForGrid();
         if (ordered.isEmpty()) {
+            focusedAppInfo.setText("没有找到可管理的应用；上方为当前桌面的安装信息");
             TextView empty = label("没有找到可启动的应用", 16, Serif.regular(this), 0x99FFFFFF);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(80), 0, dp(80));
@@ -395,11 +428,12 @@ public final class AppPickerActivity extends TvActivity {
         tile.setFocusable(true);
         tile.setClickable(true);
         tile.setPadding(dp(4), dp(8), dp(4), dp(6));
-        tile.setContentDescription(entry.label);
+        InstallInfo info = installInfo.get(entry.pkg);
+        tile.setContentDescription(appDetails(entry));
 
         ImageView icon = new ImageView(this);
         if (entry.icon != null) icon.setImageDrawable(entry.icon);
-        tile.addView(icon, new LinearLayout.LayoutParams(dp(84), dp(84)));
+        tile.addView(icon, new LinearLayout.LayoutParams(dp(76), dp(76)));
 
         TextView name = label(entry.label, 14, Serif.regular(this), 0xFFFFFFFF);
         name.setGravity(Gravity.CENTER);
@@ -409,6 +443,16 @@ public final class AppPickerActivity extends TvActivity {
         nameParams.topMargin = dp(8);
         tile.addView(name, nameParams);
 
+        TextView installed = label(info == null || info.installed <= 0
+                ? "安装日期未知" : "安装 " + time(info.installed),
+                11, Serif.regular(this), 0xA6FFFFFF);
+        installed.setGravity(Gravity.CENTER);
+        installed.setSingleLine(true);
+        installed.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams dateParams = new LinearLayout.LayoutParams(-1, -2);
+        dateParams.topMargin = dp(5);
+        tile.addView(installed, dateParams);
+
         tiles.put(entry.pkg, tile);
         names.put(entry.pkg, name);
         icons.put(entry.pkg, icon);
@@ -417,16 +461,12 @@ public final class AppPickerActivity extends TvActivity {
             if (uninstallMode) toggleRemove(entry.pkg);
             else toggle(entry.pkg);
         });
-        // 排序已经挪到首页长按，这里空出来的长按用来打开系统应用信息页。
-        // 卸载模式下不响应，免得和「标记删除」的手感混在一起。
-        tile.setOnLongClickListener(v -> {
-            if (uninstallMode) return false;
-            openAppDetails(entry.pkg);
-            return true;
-        });
         tile.setOnFocusChangeListener((v, focused) -> {
             applyTileStyle(tile, entry.pkg, focused);
-            if (focused) scrollIntoView(tile);
+            if (focused) {
+                focusedAppInfo.setText(appDetails(entry));
+                scrollIntoView(tile);
+            }
         });
         return tile;
     }
@@ -519,20 +559,47 @@ public final class AppPickerActivity extends TvActivity {
         counter.setText(selected.isEmpty() ? (showAll ? "已选 0 个（显示全部）" : "已选 0 个（首页不展示应用）")
                 : "已选 " + selected.size() + " 个　未选 " + Math.max(0, hidden));
     }
-    /** 打开系统「应用信息」页。部分电视固件没有这个 Activity，捕获后给一句提示。 */
-    private void openAppDetails(String pkg) {
-        try {
-            startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    android.net.Uri.parse("package:" + pkg))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (RuntimeException unavailable) {
-            Serif.toast(this, "这台电视没有应用信息页面");
-        }
-    }
-
     private String labelOf(String pkg) {
         for (AppCatalog.Entry entry : apps) if (entry.pkg.equals(pkg)) return entry.label;
         return pkg;
+    }
+
+    private String appDetails(AppCatalog.Entry entry) {
+        InstallInfo info = installInfo.get(entry.pkg);
+        return entry.label + "　·　" + (info == null ? "版本未知" : info.version())
+                + "\n安装：" + time(info == null ? 0 : info.installed)
+                + "　·　最近更新：" + time(info == null ? 0 : info.updated)
+                + "\n包名：" + entry.pkg;
+    }
+
+    private static String time(long value) {
+        return value > 0 ? new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+                .format(new Date(value)) : "未知";
+    }
+
+    /** PackageManager 的首次安装时间与最近更新时间；覆盖更新不会冒充首次安装。 */
+    private static final class InstallInfo {
+        final String name;
+        final long installed, updated;
+
+        InstallInfo(String name, long installed, long updated) {
+            this.name = name;
+            this.installed = installed;
+            this.updated = updated;
+        }
+
+        static InstallInfo read(PackageManager pm, String pkg) {
+            try {
+                PackageInfo info = pm.getPackageInfo(pkg, 0);
+                return new InstallInfo(info.versionName, info.firstInstallTime, info.lastUpdateTime);
+            } catch (PackageManager.NameNotFoundException | RuntimeException unavailable) {
+                return new InstallInfo(null, 0, 0);
+            }
+        }
+
+        String version() {
+            return name == null || name.trim().isEmpty() ? "版本未知" : "v" + name;
+        }
     }
 
     private void scrollIntoView(View view) {

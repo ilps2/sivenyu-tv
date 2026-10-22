@@ -30,11 +30,11 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 本地壁纸选择页。
+ * 本地媒体选择页。
  *
- * 电视上没有可靠的系统文件选择器，所以自己扫描机身存储与 U 盘的图片目录，做成缩略图网格多选。
- * 导入时统一处理：按 EXIF 方向摆正、缩到最长边 1920、转存 JPEG 到应用私有目录。
- * 这样即使原图在 U 盘、后来拔掉了，壁纸也不会丢。
+ * 电视上没有可靠的系统文件选择器，所以自己扫描机身存储与 U 盘的媒体目录，做成缩略图网格多选。
+ * 导入时统一处理：图片按 EXIF 方向摆正、缩到最长边 1920、转存 JPEG；视频原样转存。
+ * 文件都落到应用私有的统一媒体目录 {@code files/media/}，壁纸和屏保共用。
  */
 public final class WallpaperSourceActivity extends TvActivity {
     private static final int MAX_FOUND = 120;
@@ -68,7 +68,7 @@ public final class WallpaperSourceActivity extends TvActivity {
         header.setGravity(Gravity.BOTTOM);
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(label("选择本地壁纸", 28, Serif.light(this), 0xFFFFFFFF));
+        texts.addView(label("选择本地媒体", 28, Serif.light(this), 0xFFFFFFFF));
         status = label("正在扫描存储…", 13, Serif.regular(this), 0x8AFFFFFF);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2);
         statusParams.topMargin = dp(6);
@@ -148,7 +148,7 @@ public final class WallpaperSourceActivity extends TvActivity {
         if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
             scan();
         } else {
-            status.setText("没有存储权限，无法读取本地图片。可在系统设置里授予后重进本页。");
+            status.setText("没有存储权限，无法读取本地媒体。可在系统设置里授予后重进本页。");
         }
     }
 
@@ -203,9 +203,7 @@ public final class WallpaperSourceActivity extends TvActivity {
                 continue;
             }
             String lower = name.toLowerCase(Locale.ROOT);
-            boolean image = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                    || lower.endsWith(".png") || lower.endsWith(".webp");
-            if (!image) continue;
+            if (!MediaLibrary.isMedia(lower)) continue;
             if (seen.add(file.getAbsolutePath())) out.add(file);
             if (out.size() >= MAX_FOUND) return;
         }
@@ -220,10 +218,10 @@ public final class WallpaperSourceActivity extends TvActivity {
         grid.removeAllViews();
 
         if (images.isEmpty()) {
-            status.setText("没找到图片。把图片放进 U 盘根目录或「图片」文件夹后重进本页。");
+            status.setText("没找到图片或视频。把媒体放进 U 盘根目录或「图片」「Movies」文件夹后重进本页。");
             return;
         }
-        status.setText("找到 " + images.size() + " 张图片　·　确认键选择，最多 " + MAX_PICK + " 张");
+        status.setText("找到 " + images.size() + " 个文件　·　确认键选择，最多 " + MAX_PICK + " 张");
 
         LinearLayout row = null;
         int perRow = 4;
@@ -311,6 +309,9 @@ public final class WallpaperSourceActivity extends TvActivity {
     }
 
     private Bitmap decodeThumb(File file) {
+        if (MediaLibrary.isVideo(file.getName())) {
+            return MediaLibrary.frame(file, 400);
+        }
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -332,14 +333,14 @@ public final class WallpaperSourceActivity extends TvActivity {
             selected.remove(key);
         } else {
             if (selected.size() >= MAX_PICK) {
-                Serif.toast(this, "最多选 " + MAX_PICK + " 张");
+                Serif.toast(this, "最多选 " + MAX_PICK + " 个");
                 return;
             }
             selected.add(key);
         }
         check.setVisibility(selected.contains(key) ? View.VISIBLE : View.INVISIBLE);
         tile.setBackground(tile.isFocused() ? ring(0x4DFFFFFF, 12) : rounded(0x1FFFFFFF, 12));
-        status.setText("已选 " + selected.size() + " 张　·　确认键选择，最多 " + MAX_PICK + " 张");
+        status.setText("已选 " + selected.size() + " 个　·　确认键选择，最多 " + MAX_PICK + " 张");
     }
 
     // ---------------------------------------------------------------- 导入
@@ -347,7 +348,7 @@ public final class WallpaperSourceActivity extends TvActivity {
     private void importSelected() {
         if (importing) return;
         if (selected.isEmpty()) {
-            Serif.toast(this, "还没选图片");
+            Serif.toast(this, "还没选文件");
             return;
         }
         importing = true;
@@ -370,18 +371,19 @@ public final class WallpaperSourceActivity extends TvActivity {
             handler.post(() -> {
                 importing = false;
                 if (saved == 0) {
-                    status.setText("导入失败，可能图片已损坏或格式不支持");
+                    status.setText("导入失败，可能文件已损坏或格式不支持");
                     return;
                 }
-                Serif.toast(this, "已导入 " + saved + " 张，回桌面可在壁纸设置里选用");
+                Serif.toast(this, "已导入 " + saved + " 个，回桌面可在壁纸设置里选用");
                 setResult(RESULT_OK);
                 finish();
             });
         }, "wallpaper-import").start();
     }
 
-    /** 摆正 + 缩边 + 转存 JPEG。 */
+    /** 摆正 + 缩边 + 转存 JPEG；视频原样复制，不重编码。 */
     private boolean store(File source, File dir) {
+        if (MediaLibrary.isVideo(source.getName())) return storeVideo(source, dir);
         Bitmap bitmap = null;
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
@@ -424,6 +426,27 @@ public final class WallpaperSourceActivity extends TvActivity {
             return false;
         } finally {
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        }
+    }
+
+    /** 视频不做重编码，直接按字节复制到统一媒体目录。 */
+    private boolean storeVideo(File source, File dir) {
+        String name = "local-" + System.currentTimeMillis() + "-"
+                + Math.abs(source.getName().hashCode()) + "-" + source.getName();
+        File target = MediaLibrary.unique(dir, name);
+        try (java.io.FileInputStream in = new java.io.FileInputStream(source);
+             FileOutputStream out = new FileOutputStream(target)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+            android.util.Log.i("SivenyuWallpaper", "导入视频 " + target.getName()
+                    + " " + target.length() + " 字节");
+            return true;
+        } catch (Exception failed) {
+            android.util.Log.w("SivenyuWallpaper", "视频导入失败 " + source, failed);
+            //noinspection ResultOfMethodCallIgnored
+            target.delete();
+            return false;
         }
     }
 

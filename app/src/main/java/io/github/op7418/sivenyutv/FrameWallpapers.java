@@ -3,6 +3,7 @@ package io.github.op7418.sivenyutv;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -32,28 +33,41 @@ import java.util.concurrent.Executors;
 final class FrameWallpapers {
     private static final class Entry {
         final String id, name, file, thumb;
+        /** 视频壁纸：不能走 ImageView 矩阵裁剪，改由播放器铺满裁切。 */
+        final boolean video;
+
         Entry(JSONObject json) throws org.json.JSONException {
             id = json.getString("id"); name = json.getString("name");
             file = json.getString("file"); thumb = json.getString("thumb");
+            video = json.optBoolean("video", false);
+        }
+
+        Entry(String id, String name, String file, String thumb, boolean video) {
+            this.id = id; this.name = name; this.file = file; this.thumb = thumb;
+            this.video = video;
         }
     }
     private final Activity activity;
     private final ImageView photo, transition;
+    private final WallpaperVideo video;
     private final SharedPreferences prefs;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final List<Entry> entries = new ArrayList<>();
     private final List<Entry> catalog = new ArrayList<>();
     private final List<TextView> captions = new ArrayList<>();
+    private final List<ImageView> thumbs = new ArrayList<>();
     private boolean rotating, active, loading, destroyed, hasImage;
     private int current, minutes, generation;
     private Dialog dialog;
     private View returnFocusAnchor;
     private View cropAnchor;
     private UploadServer uploadServer;
+    private int uploadSession;
     private Dialog uploadDialog;
     private TextView uploadStatus;
     private AlertDialog intervalDialog;
+    private Runnable wallpaperChanged;
     private TextView autoButton, fixedButton, intervalButton, localButton, uploadButton, cropButton;
 
     private static final String KEY_HIDDEN = "hidden-entries";
@@ -61,13 +75,14 @@ final class FrameWallpapers {
     static final int REQUEST_CROP = 78;
     private final Runnable rotate = () -> load(WallpaperCycle.next(current, entries.size()));
 
-    FrameWallpapers(Activity activity, ImageView photo, ImageView transition) {
+    FrameWallpapers(Activity activity, ImageView photo, ImageView transition, WallpaperVideo video) {
         this.activity = activity; this.photo = photo; this.transition = transition;
+        this.video = video;
         MediaLibrary.migrate(activity);
         prefs = activity.getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE);
         rotating = prefs.getBoolean("rotating", true);
         minutes = WallpaperCycle.minutes(prefs.getInt("minutes", WallpaperCycle.DEFAULT_MINUTES));
-        try (InputStream stream = openCatalog()) {
+        try (InputStream stream = openCatalog(activity)) {
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int n;
@@ -95,10 +110,10 @@ final class FrameWallpapers {
         load(current);
     }
 
-    private InputStream openCatalog() throws java.io.IOException {
-        try { return activity.getAssets().open("wallpapers/local/catalog.json"); }
+    static InputStream openCatalog(Context context) throws java.io.IOException {
+        try { return context.getAssets().open("wallpapers/local/catalog.json"); }
         catch (java.io.FileNotFoundException absent) {
-            return activity.getAssets().open("wallpapers/catalog.json");
+            return context.getAssets().open("wallpapers/catalog.json");
         }
     }
 
@@ -120,6 +135,12 @@ final class FrameWallpapers {
         if (file.startsWith("user:")) {
             java.io.File target = new java.io.File(userDir(activity), file.substring(5));
             if (!target.isFile()) throw new java.io.IOException("Missing local wallpaper");
+            // 视频没有位图，用抽出来的首帧代替（面板缩略图、屏保预览、裁剪页都用它）
+            if (MediaLibrary.isVideo(target.getName())) {
+                android.graphics.Bitmap frame = MediaLibrary.frame(target, thumbnail ? 360 : 1920);
+                if (frame == null) throw new java.io.IOException("Video frame unavailable");
+                return frame;
+            }
             final String path = target.getAbsolutePath();
             // 手机竖拍照片通常是「横着存 + EXIF 写 90°」，不摆正就会被当成横图，上下也就没得调
             int rotation = exifRotation(path);
@@ -153,8 +174,23 @@ final class FrameWallpapers {
             }
             return image;
         }
-        try (InputStream stream = activity.getAssets().open("wallpapers/" + file)) {
+        return decodeAsset(activity, "wallpapers/" + file, thumbnail);
+    }
+
+    /** 壁纸与屏保共用内置图片采样，防止 4K 源文件占用过多位图内存。 */
+    static Bitmap decodeAsset(Context context, String assetPath, boolean thumbnail) throws Exception {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
+            BitmapFactory.decodeStream(stream, null, bounds);
+        }
+        int longest = Math.max(bounds.outWidth, bounds.outHeight);
+        int limit = thumbnail ? 360 : 1920;
+        int sample = 1;
+        while (longest > 0 && longest / sample > limit && sample < 8) sample *= 2;
+        try (InputStream stream = context.getAssets().open(assetPath)) {
             BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
             Bitmap image = BitmapFactory.decodeStream(stream, null, options);
             if (image == null) throw new java.io.IOException("Image unavailable");
@@ -193,9 +229,9 @@ final class FrameWallpapers {
      * 同一个隐藏名单给屏保内容页读：在壁纸面板里移除过的内置壁纸，
      * 屏保候选里也一起消失（否则两边不一致）。
      */
-    static java.util.Set<String> hiddenBuiltinIds(Activity activity) {
-        return new java.util.HashSet<>(activity
-                .getSharedPreferences("frame-wallpapers", Activity.MODE_PRIVATE)
+    static java.util.Set<String> hiddenBuiltinIds(Context context) {
+        return new java.util.HashSet<>(context
+                .getSharedPreferences("frame-wallpapers", Context.MODE_PRIVATE)
                 .getStringSet(KEY_HIDDEN, java.util.Collections.<String>emptySet()));
     }
 
@@ -215,28 +251,22 @@ final class FrameWallpapers {
         loadUserEntries();
     }
 
-    /** 把 user: 开头的本地图片重新挂到 entries 末尾，新增/删除后调用。 */
+    /**
+     * 把统一媒体目录里的内容挂到 entries 末尾。
+     *
+     * <p>壁纸库和屏保库看的是同一个 {@code files/media/}，所以图片和视频都收进来：
+     * 传一次，壁纸和屏保都能选。视频的缩略图走抽帧。
+     */
     private void loadUserEntries() {
         entries.removeIf(entry -> entry.id.startsWith("user-"));
-        java.io.File[] files = userDir().listFiles();
-        if (files == null) return;
-        java.util.Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        List<MediaLibrary.Item> media = MediaLibrary.listMedia(userDir());
         int added = 0;
-        for (java.io.File file : files) {
-            String name = file.getName();
-            String lower = name.toLowerCase(java.util.Locale.ROOT);
-            if (!(lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                    || lower.endsWith(".png") || lower.endsWith(".webp"))) continue;
+        for (MediaLibrary.Item item : media) {
             if (added >= 15) break;
-            try {
-                entries.add(new Entry(new JSONObject().put("id", "user-" + name)
-                        .put("name", name.replaceAll("\\.[^.]+$", ""))
-                        .put("file", "user:" + name)
-                        .put("thumb", "user:" + name)));
-                added++;
-            } catch (org.json.JSONException impossible) {
-                android.util.Log.w("TvHome.Wallpaper", "Skip " + name, impossible);
-            }
+            String name = item.name;
+            entries.add(new Entry("user-" + name, name.replaceAll("\\.[^.]+$", ""),
+                    "user:" + name, "user:" + name, item.video));
+            added++;
         }
     }
 
@@ -251,6 +281,12 @@ final class FrameWallpapers {
     }
 
     int size() { return entries.size(); }
+
+    void setOnWallpaperChanged(Runnable listener) { wallpaperChanged = listener; }
+
+    private void notifyWallpaperChanged() {
+        if (!destroyed && wallpaperChanged != null) wallpaperChanged.run();
+    }
 
     String entryFile(int index) {
         return index >= 0 && index < entries.size() ? entries.get(index).file : null;
@@ -268,9 +304,14 @@ final class FrameWallpapers {
         if (destroyed || entries.isEmpty()) return;
         handler.removeCallbacks(rotate);
         final int request = ++generation;
-        final String entryId = entries.get(index).id;
+        final Entry entry = entries.get(index);
+        final String entryId = entry.id;
         final float[] crop = WallpaperCrop.read(activity, entryId);
         loading = true;
+        if (entry.video) {
+            loadVideo(index, entry, request);
+            return;
+        }
         worker.execute(() -> {
             Bitmap bitmap = null;
             try { bitmap = decode(activity, entries.get(index).file, false); }
@@ -287,12 +328,14 @@ final class FrameWallpapers {
                     schedule();
                     return;
                 }
+                video.stop();
                 transition.animate().cancel();
                 if (transition.getDrawable() != null) photo.setImageDrawable(transition.getDrawable());
                 transition.setImageDrawable(null);
                 if (!hasImage || !active) {
                     photo.setImageBitmap(image);
                     WallpaperCrop.apply(photo, crop);
+                    notifyWallpaperChanged();
                 } else {
                     transition.setImageBitmap(image);
                     WallpaperCrop.apply(transition, crop);
@@ -302,6 +345,7 @@ final class FrameWallpapers {
                         WallpaperCrop.apply(photo, crop);
                         transition.setImageDrawable(null);
                         transition.setAlpha(0f);
+                        notifyWallpaperChanged();
                     }).start();
                 }
                 hasImage = true;
@@ -315,12 +359,73 @@ final class FrameWallpapers {
         });
     }
 
+    /**
+     * 视频壁纸：播放器铺满裁切，图片层留一张首帧做背景与玻璃取样。
+     */
+    private void loadVideo(int index, Entry entry, int request) {
+        final java.io.File file = new java.io.File(userDir(), entry.file.substring(5));
+        if (!file.isFile()) {
+            loading = false;
+            Serif.toast(activity, "视频文件不存在，跳过");
+            schedule();
+            return;
+        }
+        worker.execute(() -> {
+            Bitmap poster = null;
+            try { poster = MediaLibrary.frame(file, 1920); }
+            catch (Exception | OutOfMemoryError unavailable) {
+                android.util.Log.w("TvHome.Wallpaper", "视频首帧失败", unavailable);
+            }
+            final Bitmap frame = poster;
+            handler.post(() -> {
+                if (destroyed || request != generation) {
+                    if (frame != null) frame.recycle();
+                    return;
+                }
+                loading = false;
+                if (frame != null) {
+                    photo.setImageBitmap(frame);
+                    // 首帧只是占位与玻璃取样用，铺满交给播放器，图片层自己居中裁切
+                    resetPhotoScale();
+                }
+                transition.animate().cancel();
+                transition.setImageDrawable(null);
+                hasImage = true;
+                current = index;
+                prefs.edit().putString("selected", entry.id).apply();
+                video.play(file.getAbsolutePath());
+                notifyWallpaperChanged();
+                refreshLabels();
+                android.util.Log.i("TvHome.Wallpaper", "Applied video " + entry.name
+                        + " rotating=" + rotating + " minutes=" + minutes);
+                schedule();
+            });
+        });
+    }
+
+    /**
+     * 把图片层恢复成普通居中裁切。
+     *
+     * <p>{@code setImageMatrix} 只在 MATRIX 模式下合法，直接调用会抛
+     * {@code IllegalStateException}，所以必须先切回 MATRIX 清矩阵再换模式。
+     */
+    private void resetPhotoScale() {
+        photo.setScaleType(ImageView.ScaleType.MATRIX);
+        photo.setImageMatrix(null);
+        photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
+    }
+
     /** 构图参数变了，或者 view 刚布局完，重新套一次矩阵。 */
-    void reapplyCrop() {
-        if (entries.isEmpty()) return;
+    void reapplyCrop() {        if (entries.isEmpty()) return;
+        if (current < entries.size() && entries.get(current).video) {
+            // 视频由播放器自己铺满裁切，图片层只是首帧占位，不用套矩阵
+            resetPhotoScale();
+            return;
+        }
         float[] crop = WallpaperCrop.read(activity, entries.get(current).id);
         WallpaperCrop.apply(photo, crop);
         WallpaperCrop.apply(transition, crop);
+        notifyWallpaperChanged();
     }
 
     private void schedule() {
@@ -330,18 +435,21 @@ final class FrameWallpapers {
             handler.postDelayed(rotate, minutes * 60_000L);
     }
 
-    void resume() { active = true; schedule(); }
+    void resume() { active = true; video.resume(); schedule(); }
     void pause() {
         active = false;
         handler.removeCallbacks(rotate);
+        video.pause();
         if (intervalDialog != null) intervalDialog.dismiss();
         if (dialog != null) dialog.dismiss();
     }
     void destroy() {
         destroyed = true;
+        wallpaperChanged = null;
         stopUploadServer();
         generation++;
         pause();
+        video.release();
         transition.animate().cancel();
         worker.shutdownNow();
         handler.removeCallbacksAndMessages(null);
@@ -360,6 +468,7 @@ final class FrameWallpapers {
         if (dialog != null && dialog.isShowing()) return;
         handler.removeCallbacks(rotate);
         captions.clear();
+        thumbs.clear();
         dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = new LinearLayout(activity);
@@ -376,43 +485,17 @@ final class FrameWallpapers {
                 new LinearLayout.LayoutParams(-1, -2));
         // 第二行：操作按钮，和模式按钮同一套尺寸，不再单独挂在标题/说明行右边
         cropButton = button("⇅ 画面位置", this::openCrop);
-        localButton = button("＋ 本地图片", this::pickLocalImages);
+        localButton = button("＋ 本地媒体", this::pickLocalImages);
         uploadButton = button("手机上传", this::showUploadDialog);
         LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(-1, -2);
         actionsParams.topMargin = dp(8);
         panel.addView(buttonRow(cropButton, localButton, uploadButton), actionsParams);
-        // 说明行右侧挂一个「恢复内置」文字入口。内置壁纸在 assets 里删不掉，
-        // 移除只是记进隐藏名单，所以必须留一个找回的路径；
-        // 放在这里而不是第四个按钮，是因为按钮行要保持三等分，
-        // 用 INVISIBLE 占位会让整行宽度在「有隐藏 / 无隐藏」之间跳。
-        int hiddenCount = hiddenIds().size();
-        TextView note = label("", 12);
-        note.setText(hiddenCount > 0
-                ? "点图片立即使用；长按格子可移除壁纸　·　已移除 " + hiddenCount + " 张内置"
-                : "点图片立即使用；长按格子可移除壁纸");
+        TextView note = label("点一下立即使用；视频会静音循环播放，长按格子可移除", 12);
         note.setTextColor(0xB3FFFFFF);
         note.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(0, dp(30), 1f);
+        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(-1, dp(30));
         noteParams.topMargin = dp(6);
-        LinearLayout noteRow = new LinearLayout(activity);
-        noteRow.setOrientation(LinearLayout.HORIZONTAL);
-        noteRow.setGravity(Gravity.CENTER_VERTICAL);
-        noteRow.addView(note, noteParams);
-        if (hiddenCount > 0) {
-            TextView restore = label("↺ 恢复内置", 13);
-            restore.setTextColor(0xFFFFD9A0);
-            restore.setGravity(Gravity.CENTER);
-            restore.setPadding(dp(12), 0, dp(4), 0);
-            restore.setFocusable(true);
-            restore.setClickable(true);
-            restore.setId(View.generateViewId());
-            restore.setBackground(surface(0x18FFD9A0, false));
-            restore.setOnFocusChangeListener(
-                    (v, focus) -> restore.setBackground(surface(0x28FFD9A0, focus)));
-            restore.setOnClickListener(v -> restoreBuiltins());
-            noteRow.addView(restore, new LinearLayout.LayoutParams(-2, dp(26)));
-        }
-        panel.addView(noteRow, new LinearLayout.LayoutParams(-1, -2));
+        panel.addView(note, noteParams);
         GridLayout grid = new GridLayout(activity);
         grid.setColumnCount(5);
         List<View> tiles = new ArrayList<>();
@@ -447,8 +530,30 @@ final class FrameWallpapers {
             });
             ImageView thumb = new ImageView(activity);
             thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            try { thumb.setImageBitmap(decode(activity, entries.get(i).thumb, true)); }
-            catch (Exception unavailable) { thumb.setBackgroundColor(0xFF30343A); }
+            if (entries.get(i).video) {
+                // 抽帧要走 MediaMetadataRetriever，别在主线程上卡住面板
+                thumb.setBackgroundColor(0xFF30343A);
+                final int slot = i;
+                worker.execute(() -> {
+                    android.graphics.Bitmap frame = null;
+                    try { frame = MediaLibrary.frame(new java.io.File(userDir(),
+                            entries.get(slot).file.substring(5)), 360); }
+                    catch (Exception | OutOfMemoryError unavailable) {
+                        android.util.Log.w("TvHome.Wallpaper", "缩略图抽帧失败", unavailable);
+                    }
+                    final android.graphics.Bitmap result = frame;
+                    handler.post(() -> {
+                        if (destroyed || result == null) return;
+                        if (slot < thumbs.size() && thumbs.get(slot) != null) {
+                            thumbs.get(slot).setImageBitmap(result);
+                        }
+                    });
+                });
+            } else {
+                try { thumb.setImageBitmap(decode(activity, entries.get(i).thumb, true)); }
+                catch (Exception unavailable) { thumb.setBackgroundColor(0xFF30343A); }
+            }
+            thumbs.add(thumb);
             tile.addView(thumb, new LinearLayout.LayoutParams(-1, dp(70)));
             TextView caption = label("", 12);
             caption.setGravity(Gravity.CENTER);
@@ -504,6 +609,7 @@ final class FrameWallpapers {
         dialog.setContentView(panel);
         dialog.setOnDismissListener(d -> {
             captions.clear();
+            thumbs.clear();
             if (returnFocus != null) returnFocus.requestFocus();
             schedule();
         });
@@ -539,12 +645,13 @@ final class FrameWallpapers {
         final java.io.File mediaDir = MediaLibrary.dir(activity);
 
         stopUploadServer();
+        final int session = uploadSession;
         uploadServer = new UploadServer(port, mediaDir, mediaDir, (file, video) -> handler.post(() -> {
-            if (uploadStatus == null) return;
+            if (destroyed || session != uploadSession || uploadStatus == null) return;
+            loadUserEntries();
             if (video) {
-                uploadStatus.setText("已收到视频 " + file.getName() + "\n去「屏保内容」里勾选才会播放");
+                uploadStatus.setText("已收到视频 " + file.getName() + "\n壁纸和屏保都能用了");
             } else {
-                loadUserEntries();
                 uploadStatus.setText("已收到图片 " + file.getName() + "\n壁纸和屏保都能直接用了");
             }
         }));
@@ -565,7 +672,7 @@ final class FrameWallpapers {
         panel.setBackground(surface(0xF51C2025, false));
 
         panel.addView(label("手机扫码上传", 22), new LinearLayout.LayoutParams(-1, dp(38)));
-        TextView note = label("手机连同一个 Wi-Fi，扫下面的码；图片进壁纸库，视频进屏保素材", 12);
+        TextView note = label("手机连同一个 Wi-Fi，扫下面的码；图片和视频都进同一个媒体库", 12);
         note.setTextColor(0xB3FFFFFF);
         panel.addView(note, new LinearLayout.LayoutParams(-1, dp(30)));
 
@@ -590,15 +697,21 @@ final class FrameWallpapers {
         address.setGravity(Gravity.CENTER);
         panel.addView(address, new LinearLayout.LayoutParams(-1, dp(34)));
 
-        uploadStatus = label("等待上传…", 12);
+        uploadStatus = label("等待上传…　·　手机端可长按取消单个文件", 12);
         uploadStatus.setTextColor(0x99FFFFFF);
         uploadStatus.setGravity(Gravity.CENTER);
         panel.addView(uploadStatus, new LinearLayout.LayoutParams(-1, dp(48)));
 
+        TextView cancel = button("长按取消本次上传", () ->
+                Serif.toast(activity, "长按确认键可取消本次上传，已完成的文件保留"));
+        attachUploadCancelHold(cancel);
         TextView done = button("完成", sheet::dismiss);
-        LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(dp(150), dp(40));
-        doneParams.gravity = Gravity.CENTER_HORIZONTAL;
-        panel.addView(done, doneParams);
+        LinearLayout footer = new LinearLayout(activity);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        cancelParams.rightMargin = dp(10);
+        footer.addView(cancel, cancelParams);
+        footer.addView(done, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(40)));
 
         sheet.setContentView(panel);
         sheet.setOnDismissListener(d -> {
@@ -610,11 +723,71 @@ final class FrameWallpapers {
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         sheet.getWindow().setLayout(dp(460), -2);
+        cancel.setNextFocusRightId(done.getId());
+        done.setNextFocusLeftId(cancel.getId());
         done.requestFocus();
         uploadDialog = sheet;
     }
 
+    /** 保留正式版已有的电视端整场取消，同时使用完整暂存与清理逻辑。 */
+    private void cancelUpload() {
+        if (uploadServer == null) {
+            Serif.toast(activity, "上传已经关闭");
+            return;
+        }
+        stopUploadServer();
+        if (uploadStatus != null) {
+            uploadStatus.setText("本次上传已取消，已完成的文件保留\n关闭窗口后可重新扫码上传");
+            uploadStatus.setTextColor(0xFFFFD9A0);
+        }
+        Serif.toast(activity, "已取消本次上传，未完成文件会自动清理");
+    }
+
+    private void attachUploadCancelHold(TextView button) {
+        final boolean[] held = {false};
+        final Runnable action = () -> {
+            if (button.isFocused() && button.isAttachedToWindow()) {
+                held[0] = true;
+                cancelUpload();
+            }
+        };
+        button.setOnLongClickListener(v -> {
+            cancelUpload();
+            return true;
+        });
+        button.setOnKeyListener((v, key, event) -> {
+            boolean confirm = key == android.view.KeyEvent.KEYCODE_DPAD_CENTER
+                    || key == android.view.KeyEvent.KEYCODE_ENTER
+                    || key == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER;
+            if (!confirm) return false;
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                if (event.getRepeatCount() == 0) {
+                    handler.removeCallbacks(action);
+                    held[0] = false;
+                    handler.postDelayed(action, 700);
+                }
+                return true;
+            }
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) {
+                handler.removeCallbacks(action);
+                if (!held[0] && !event.isCanceled()) button.performClick();
+                held[0] = false;
+                return true;
+            }
+            return true;
+        });
+        View.OnFocusChangeListener appearance = button.getOnFocusChangeListener();
+        button.setOnFocusChangeListener((v, focused) -> {
+            if (appearance != null) appearance.onFocusChange(v, focused);
+            if (!focused) {
+                handler.removeCallbacks(action);
+                held[0] = false;
+            }
+        });
+    }
+
     private void stopUploadServer() {
+        uploadSession++;
         if (uploadServer != null) {
             uploadServer.stop();
             uploadServer = null;
@@ -633,7 +806,7 @@ final class FrameWallpapers {
         AlertDialog confirm = new AlertDialog.Builder(activity)
                 .setTitle(bundled ? "移除内置壁纸" : "删除壁纸")
                 .setMessage(bundled
-                        ? "「" + entry.name + "」会从壁纸和屏保列表移除，图片仍打包在应用内，之后可以点「↺ 恢复内置」找回来。"
+                        ? "「" + entry.name + "」会从壁纸和屏保列表移除，移除后无法在应用内恢复。"
                         : "「" + entry.name + "」会从应用内彻底删除，不可恢复。")
                 .setPositiveButton(bundled ? "移除" : "删除", (d, w) -> deleteEntry(entry))
                 .setNegativeButton("取消", null)
@@ -674,27 +847,10 @@ final class FrameWallpapers {
             current--;
         }
         Serif.toast(activity, bundled
-                ? "已移除「" + entry.name + "」，点「↺ 恢复内置」可找回"
+                ? "已移除「" + entry.name + "」"
                 : (deleted ? "已删除「" + entry.name + "」" : "删除失败，文件可能已被移除"));
 
         // 面板里的格子是打开时一次性铺好的，重开一次最省事
-        final View anchor = returnFocusAnchor;
-        if (dialog != null && dialog.isShowing()) dialog.dismiss();
-        handler.postDelayed(() -> {
-            if (!destroyed) show(anchor);
-        }, 150);
-    }
-
-    /** 把隐藏过的内置壁纸全部放回列表。 */
-    private void restoreBuiltins() {
-        prefs.edit().remove(KEY_HIDDEN).apply();
-        final String selectedId = entries.isEmpty() ? "" : entries.get(current).id;
-        rebuildEntries();
-        current = 0;
-        for (int i = 0; i < entries.size(); i++) {
-            if (entries.get(i).id.equals(selectedId)) current = i;
-        }
-        Serif.toast(activity, "内置壁纸已恢复");
         final View anchor = returnFocusAnchor;
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
         handler.postDelayed(() -> {
@@ -726,6 +882,10 @@ final class FrameWallpapers {
         final Entry entry = entries.get(current);
         if (entry.file.startsWith("builtin:")) {
             Serif.toast(activity, "纯色渐变壁纸不需要调整");
+            return;
+        }
+        if (entry.video) {
+            Serif.toast(activity, "视频壁纸由画面自动铺满，不支持手动调整");
             return;
         }
         cropAnchor = returnFocusAnchor;
@@ -764,7 +924,7 @@ final class FrameWallpapers {
             activity.startActivityForResult(
                     new android.content.Intent(activity, WallpaperSourceActivity.class), REQUEST_LOCAL);
         } catch (RuntimeException unavailable) {
-            Serif.toast(activity, "打不开本地图片选择");
+            Serif.toast(activity, "打不开本地媒体选择");
         }
     }
 

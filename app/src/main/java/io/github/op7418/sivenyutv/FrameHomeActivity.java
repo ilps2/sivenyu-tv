@@ -73,7 +73,9 @@ public final class FrameHomeActivity extends TvActivity {
 
     private ImageView photo;
     private ImageView transition;
+    private WallpaperVideo wallpapersVideo;
     private FrameWallpapers wallpapers;
+    private GlassDock glassDock;
     private LinearLayout row;
     private TextView clock;
     private TextView hint;
@@ -136,7 +138,11 @@ public final class FrameHomeActivity extends TvActivity {
         transition.setAlpha(0f);
         root.addView(transition, new FrameLayout.LayoutParams(-1, -1));
 
-        wallpapers = new FrameWallpapers(this, photo, transition);
+        // 视频壁纸层：TextureView 是普通 View，能压在 scrim 下面、被 dock 折射取样
+        wallpapersVideo = new WallpaperVideo(this);
+        root.addView(wallpapersVideo.view(), new FrameLayout.LayoutParams(-1, -1));
+
+        wallpapers = new FrameWallpapers(this, photo, transition, wallpapersVideo);
 
         View scrim = new View(this);
         GradientDrawable scrimDrawable = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
@@ -148,7 +154,10 @@ public final class FrameHomeActivity extends TvActivity {
         FrameLayout.LayoutParams stageParams = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_VERTICAL);
         stageParams.bottomMargin = dp(40);
         root.addView(buildStage(), stageParams);
-        root.addView(buildDock(), dockParams());
+        root.addView(buildDock(scrim), dockParams());
+        wallpapers.setOnWallpaperChanged(glassDock::refreshBackdrop);
+        // 视频壁纸在播时，玻璃折射的取样要跟着当前帧走
+        wallpapersVideo.setTick(glassDock::refreshBackdrop);
         root.addView(buildScreensaver(), new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 
@@ -204,12 +213,11 @@ public final class FrameHomeActivity extends TvActivity {
         return stage;
     }
 
-    private View buildDock() {
-        LinearLayout dock = new LinearLayout(this);
-        dock.setOrientation(LinearLayout.HORIZONTAL);
-        dock.setGravity(Gravity.CENTER_VERTICAL);
-        // 和图标区同一套逻辑：常态只有文字，胶囊只在获得焦点时出现
-        dock.setPadding(dp(10), dp(7), dp(10), dp(7));
+    private View buildDock(View scrim) {
+        GlassDock dock = new GlassDock(this, photo, scrim);
+        glassDock = dock;
+        // 视频壁纸在播时，玻璃折射取样改用视频当前帧
+        dock.setLiveSource((android.view.TextureView) wallpapersVideo.view());
 
         addDockItem(dock, "壁纸", () -> wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0)));
         addDockItem(dock, "应用", this::openPicker);
@@ -226,28 +234,8 @@ public final class FrameHomeActivity extends TvActivity {
         return dock;
     }
 
-    private void addDockItem(LinearLayout dock, String name, Runnable action) {
-        TextView item = label(name, 17, Serif.regular(this), 0xCCFFFFFF);
-        item.setGravity(Gravity.CENTER);
-        item.setMinHeight(dp(48));
-        item.setPadding(dp(26), dp(10), dp(26), dp(10));
-        item.setShadowLayer(dp(6), 0, dp(2), 0xC0000000);
-        item.setFocusable(true);
-        item.setId(View.generateViewId());
-        item.setOnClickListener(v -> action.run());
-        final android.graphics.drawable.Drawable focusedGlass = Glass.capsule(0x52, 0x22);
-        item.setOnFocusChangeListener((v, focused) -> {
-            item.setBackground(focused ? focusedGlass : null);
-            item.setTextColor(focused ? 0xFFFFFFFF : 0xCCFFFFFF);
-            // Keep font metrics stable so focusing does not resize the capsule.
-            item.animate().scaleX(focused ? 1.06f : 1f).scaleY(focused ? 1.06f : 1f)
-                    .setDuration(150).start();
-        });
-        dockItems.add(item);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
-        params.leftMargin = dp(6);
-        params.rightMargin = dp(6);
-        dock.addView(item, params);
+    private void addDockItem(GlassDock dock, String name, Runnable action) {
+        dockItems.add(dock.addItem(name, action));
     }
 
     // ---------------------------------------------------------------- 屏保
@@ -585,11 +573,7 @@ public final class FrameHomeActivity extends TvActivity {
 
     private void renderRow(List<AppCatalog.Entry> all, String keepPackage) {
         clearConfirmPress();
-        // 列表马上要整个重建，这里只需要把移动状态收尾，不要走 endMoving(false) 的
-        // 「恢复备份 + layoutTiles」那一整套，那会在下面被 removeAllViews 立刻覆盖掉。
-        movingPkg = null;
-        moveBackupApps = null;
-        moveBackupTiles = null;
+        endMoving(false);
         row.removeAllViews();
         tiles.clear();
         tileRows.clear();

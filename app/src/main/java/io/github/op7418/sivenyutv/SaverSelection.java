@@ -51,11 +51,17 @@ final class SaverSelection {
         prefs(c).edit().remove(KEY_ITEMS).apply();
     }
 
-    /** 简单的类型判断，供播放器与选择器共用。 */
+    /**
+     * 简单的类型判断，供播放器与选择器共用。
+     *
+     * <p>扩展名表统一放在 {@link MediaLibrary}，壁纸库和屏保库共用一份，
+     * 免得两边的识别范围慢慢岔开。
+     */
     static boolean isVideo(String path) {
-        String lower = path.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".avi")
-                || lower.endsWith(".ts") || lower.endsWith(".mov") || lower.endsWith(".webm")
-                || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
+        if (path == null) return false;
+        String name = path;
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash >= 0) name = name.substring(slash + 1);
+        return MediaLibrary.isVideo(name);
     }
 }

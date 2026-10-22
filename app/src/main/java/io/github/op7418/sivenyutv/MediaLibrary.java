@@ -4,13 +4,17 @@ import android.content.Context;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 壁纸与屏保共用的媒体目录：{@code files/media/}。
  *
- * <p>图片既能当壁纸，也能进屏保轮播；视频只进屏保。手机扫码上传、「＋ 本地图片」导入
- * 都落到这里，所以传一次两边都能用。
+ * <p>这里是唯一的媒体仓库：手机扫码上传、「＋ 本地媒体」导入都落到这个目录，
+ * 壁纸库和屏保库都从这一个目录识别内容。图片和视频一视同仁——传一次，
+ * 两边都能选，壁纸也能直接播视频。
  *
  * <p>旧版本把图片放在 {@code files/wallpapers/}、视频放在 {@code files/saver/}，
  * {@link #migrate(Context)} 会把它们搬过来（只跑一次，搬完旧目录空着）。
@@ -21,6 +25,7 @@ final class MediaLibrary {
 
     private MediaLibrary() { }
 
+    /** 统一媒体目录。 */
     static File dir(Context context) {
         File target = new File(context.getFilesDir(), FOLDER);
         if (!target.isDirectory()) {
@@ -30,10 +35,137 @@ final class MediaLibrary {
         return target;
     }
 
+    /** 媒体条目：文件名 + 是否视频。 */
+    static final class Item {
+        final File file;
+        final String name;
+        final boolean video;
+
+        Item(File file, boolean video) {
+            this.file = file;
+            this.name = file.getName();
+            this.video = video;
+        }
+    }
+
+    /**
+     * 图片扩展名。手机照片与壁纸面板都走这一份，屏保页不再单独写一遍。
+     */
+    private static final String[] IMAGE_EXT = {
+            ".jpg", ".jpeg", ".png", ".webp", ".bmp"
+    };
+
+    /**
+     * 视频扩展名。电视上能解的常见容器都收着；
+     * 屏保选择器、上传服务、壁纸库共用这一份，避免三处各写各的。
+     */
+    private static final String[] VIDEO_EXT = {
+            ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".flv", ".wmv", ".3gp"
+    };
+
     static boolean isImage(String name) {
-        String lower = name.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                || lower.endsWith(".png") || lower.endsWith(".webp");
+        return endsWithAny(name, IMAGE_EXT);
+    }
+
+    static boolean isVideo(String name) {
+        return endsWithAny(name, VIDEO_EXT);
+    }
+
+    /** 壁纸库和屏保库都认的东西：图片或视频。 */
+    static boolean isMedia(String name) {
+        return isImage(name) || isVideo(name);
+    }
+
+    private static boolean endsWithAny(String name, String[] extensions) {
+        if (name == null) return false;
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String extension : extensions) {
+            if (lower.endsWith(extension)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 列出目录里的媒体文件，按修改时间从新到旧。
+     *
+     * <p>壁纸库与屏保库都调这一个方法，保证两边看到的候选完全一致。
+     */
+    static List<Item> listMedia(File dir) {
+        List<Item> items = new ArrayList<>();
+        File[] files = dir == null ? null : dir.listFiles();
+        if (files == null) return items;
+        for (File file : files) {
+            if (!file.isFile()) continue;
+            String name = file.getName();
+            if (name.startsWith(".")) continue;
+            if (!isMedia(name)) continue;
+            items.add(new Item(file, isVideo(name)));
+        }
+        items.sort(Comparator.comparingLong((Item item) -> item.file.lastModified()).reversed());
+        return items;
+    }
+
+    /**
+     * 抽视频的一帧做缩略图。
+     *
+     * <p>壁纸面板的格子、屏保选择页、裁剪页预览都要给视频一个图，
+     * 这里统一用同一个时间点抽帧，避免三处抽到不同的画面。
+     *
+     * @param targetWidth 目标宽度（高度按比例），0 表示不缩放
+     */
+    static android.graphics.Bitmap frame(java.io.File file, int targetWidth) {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            android.graphics.Bitmap bitmap = null;
+            // 优先取 2 秒处；太短的视频取不到就退回第一帧
+            for (long position : new long[]{2_000_000L, 0L}) {
+                try {
+                    bitmap = retriever.getFrameAtTime(position,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                } catch (RuntimeException unavailable) {
+                    bitmap = null;
+                }
+                if (bitmap != null) break;
+            }
+            if (bitmap == null) return null;
+            if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
+                int height = Math.max(1,
+                        Math.round(bitmap.getHeight() * targetWidth / (float) bitmap.getWidth()));
+                android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(
+                        bitmap, targetWidth, height, true);
+                if (scaled != bitmap) {
+                    bitmap.recycle();
+                    bitmap = scaled;
+                }
+            }
+            return bitmap;
+        } catch (Exception | OutOfMemoryError unavailable) {
+            android.util.Log.w("TvHome.Media", "视频抽帧失败 " + file.getName(), unavailable);
+            return null;
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) { }
+        }
+    }
+
+    /**
+     * 读视频的宽高（像素）。取不到时返回 {0, 0}。
+     */
+    static int[] videoSize(java.io.File file) {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            String raw = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            String rawHeight = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            if (raw == null || rawHeight == null) return new int[]{0, 0};
+            return new int[]{Integer.parseInt(raw), Integer.parseInt(rawHeight)};
+        } catch (Exception unavailable) {
+            return new int[]{0, 0};
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) { }
+        }
     }
 
     /**
@@ -80,7 +212,8 @@ final class MediaLibrary {
         SaverSelection.save(context, updated);
     }
 
-    private static File unique(File dir, String name) {
+    /** 目标已存在时加后缀，避免覆盖同名文件。 */
+    static File unique(File dir, String name) {
         File candidate = new File(dir, name);
         if (!candidate.exists()) return candidate;
         String base = name;

@@ -14,7 +14,6 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.VideoView;
 
-import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -103,19 +102,24 @@ final class SaverView extends FrameLayout {
     private void load() {
         playlist.addAll(SaverSelection.list(getContext()));
         if (!playlist.isEmpty()) return;
-        // 未配置时用打包进 APK 的内置壁纸，按文件名顺序轮播
-        try {
-            String[] files = getContext().getAssets().list("wallpapers/bundled");
-            if (files != null) {
-                java.util.Arrays.sort(files);
-                for (String name : files) {
-                    String lower = name.toLowerCase(Locale.ROOT);
-                    if (!lower.endsWith(".jpg") || lower.contains("-thumb")) continue;
-                    playlist.add("asset:wallpapers/bundled/" + name);
+        // 与壁纸面板共用目录，新增四张内置图也进入未配置屏保的默认列表。
+        try (java.io.InputStream stream = FrameWallpapers.openCatalog(getContext())) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = stream.read(buffer)) != -1) bytes.write(buffer, 0, count);
+            org.json.JSONArray json = new org.json.JSONArray(bytes.toString("UTF-8"));
+            java.util.Set<String> hidden = FrameWallpapers.hiddenBuiltinIds(getContext());
+            if (json.length() > 40) throw new IllegalArgumentException("At most 40 wallpapers");
+            for (int i = 0; i < json.length(); i++) {
+                org.json.JSONObject entry = json.getJSONObject(i);
+                if (!hidden.contains(entry.getString("id"))) {
+                    playlist.add("asset:wallpapers/" + entry.getString("file"));
                 }
             }
-        } catch (java.io.IOException unavailable) {
-            Log.w(TAG, "枚举内置壁纸失败", unavailable);
+        } catch (Exception unavailable) {
+            playlist.clear();
+            Log.w(TAG, "读取内置壁纸目录失败", unavailable);
         }
         if (playlist.isEmpty()) {
             for (String asset : FALLBACK_ASSETS) playlist.add("asset:" + asset);
@@ -223,9 +227,7 @@ final class SaverView extends FrameLayout {
 
     private Bitmap decode(String item) throws Exception {
         if (item.startsWith("asset:")) {
-            try (InputStream stream = getContext().getAssets().open(item.substring(6))) {
-                return BitmapFactory.decodeStream(stream);
-            }
+            return FrameWallpapers.decodeAsset(getContext(), item.substring(6), false);
         }
         java.io.File file = new java.io.File(item);
         if (!file.isFile()) return null;

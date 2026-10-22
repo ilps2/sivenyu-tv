@@ -144,8 +144,28 @@ public final class SaverPickerActivity extends TvActivity {
     private void scan() {
         new Thread(() -> {
             final List<File> found = collect();
-            handler.post(() -> render(found));
+            final Set<String> availableVideos = new HashSet<>();
+            for (File file : found) {
+                if (SaverSelection.isVideo(file.getName())) {
+                    availableVideos.add(file.getAbsolutePath());
+                }
+            }
+            List<String> saved = SaverSelection.list(this);
+            if (saved.removeIf(path -> isObsoleteDemoPath(path)
+                    || (SaverSelection.isVideo(path) && !availableVideos.contains(path)))) {
+                SaverSelection.save(this, saved);
+            }
+            handler.post(() -> {
+                selected.removeIf(path -> isObsoleteDemoPath(path)
+                        || (SaverSelection.isVideo(path) && !availableVideos.contains(path)));
+                render(found);
+            });
         }, "saver-scan").start();
+    }
+
+    private static boolean isObsoleteDemoPath(String path) {
+        return path != null && path.replace('\\', '/').toLowerCase(Locale.ROOT)
+                .endsWith("/kid_splash.mp4");
     }
 
     private List<File> collect() {
@@ -162,7 +182,9 @@ public final class SaverPickerActivity extends TvActivity {
         }
         // 统一媒体目录：壁纸和屏保共用，上传一次两边都能选
         File uploaded = MediaLibrary.dir(this);
-        if (uploaded.isDirectory()) roots.add(uploaded);
+        if (uploaded.isDirectory()) {
+            roots.add(uploaded);
+        }
         File[] volumes = new File("/storage").listFiles();
         if (volumes != null) {
             for (File volume : volumes) {
@@ -194,11 +216,15 @@ public final class SaverPickerActivity extends TvActivity {
                 walk(file, depth + 1, out, seen);
                 continue;
             }
+            if (name.equalsIgnoreCase("kid_splash.mp4")) {
+                // 这个旧演示视频不属于壁纸库，也不再作为屏保媒体提供。
+                // 删除仅命中这个确切文件名，不影响其他本地视频。
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+                continue;
+            }
             String lower = name.toLowerCase(Locale.ROOT);
-            boolean image = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                    || lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".bmp");
-            boolean video = SaverSelection.isVideo(lower);
-            if (!image && !video) continue;
+            if (!MediaLibrary.isMedia(lower)) continue;
             if (seen.add(file.getAbsolutePath())) out.add(file);
         }
     }
@@ -225,6 +251,12 @@ public final class SaverPickerActivity extends TvActivity {
         if (entries.isEmpty()) {
             status.setText("没找到图片或视频。放进 U 盘或「图片」「Download」文件夹后重进本页。");
             return;
+        }
+        Set<String> availablePaths = new HashSet<>();
+        for (String[] entry : entries) availablePaths.add(entry[0]);
+        if (selected.retainAll(availablePaths)) {
+            // 清理已从壁纸库移除或已不存在的旧媒体路径，避免计数和轮播配置残留。
+            SaverSelection.save(this, selected);
         }
         refreshChecks();
 
@@ -295,11 +327,7 @@ public final class SaverPickerActivity extends TvActivity {
         final List<String> gone = new ArrayList<>();
         java.io.InputStream stream = null;
         try {
-            try {
-                stream = getAssets().open("wallpapers/local/catalog.json");
-            } catch (java.io.FileNotFoundException absent) {
-                stream = getAssets().open("wallpapers/catalog.json");
-            }
+            stream = FrameWallpapers.openCatalog(this);
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int n;
@@ -477,21 +505,8 @@ public final class SaverPickerActivity extends TvActivity {
     }
 
     private Bitmap videoFrame(File file) {
-        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(file.getAbsolutePath());
-            Bitmap frame = retriever.getFrameAtTime(2_000_000L,
-                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            return frame;
-        } catch (RuntimeException | OutOfMemoryError unavailable) {
-            return null;
-        } finally {
-            try {
-                retriever.release();
-            } catch (RuntimeException | java.io.IOException ignored) {
-                // 部分机型 release 会抛异常，忽略
-            }
-        }
+        // 走统一实现：2 秒处没有关键帧时会退回第一帧，避免抽出来是空白
+        return MediaLibrary.frame(file, 400);
     }
 
     private void save() {

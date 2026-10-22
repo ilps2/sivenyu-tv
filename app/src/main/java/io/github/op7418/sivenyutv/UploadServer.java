@@ -29,7 +29,7 @@ import java.util.Map;
  * 只做三件事：
  *   GET  /        返回上传页面（需带会话令牌）
  *   POST /upload  请求体是文件原始字节，?name=文件名
- *   POST /clear   清空刚上传的暂存（保留给以后扩展）
+ *   POST /cancel  确认指定上传已取消，已完整入库的文件保留
  *
  * 没有用 multipart —— 页面里用 fetch 直接发 File 对象，body 就是原始字节，
  * 服务端只按 Content-Length 流式落盘，不会吃内存。上传完即关闭。
@@ -54,6 +54,7 @@ final class UploadServer {
     private static final long MAX_SESSION_BYTES = 2L * 1024L * 1024L * 1024L;
     /** 令牌长度（十六进制字符数）。 */
     private static final int TOKEN_LENGTH = 32;
+    private static final int MAX_UPLOADS = 256;
 
     interface Listener {
         /** 收到文件时回调（后台线程），file 已完整写入。 */
@@ -71,9 +72,13 @@ final class UploadServer {
     private final java.util.concurrent.atomic.AtomicLong received =
             new java.util.concurrent.atomic.AtomicLong();
 
-    private ServerSocket server;
+    private volatile ServerSocket server;
+    private Socket activeClient;
     private Thread worker;
     private volatile boolean running;
+    private boolean started;
+    // Only the single request worker touches these states. Cancel follows xhr.abort().
+    private final Map<String, String> uploads = new HashMap<>();
 
     /** 会话令牌，供调用方拼进二维码地址里。 */
     String token() {
@@ -96,13 +101,16 @@ final class UploadServer {
         this.listener = listener;
     }
 
-    boolean start() {
+    synchronized boolean start() {
         if (running) return true;
+        if (started) return false; // A new window creates a new instance and token.
         try {
             server = new ServerSocket(port);
             server.setReuseAddress(true);
             running = true;
-            worker = new Thread(this::loop, "SivenyuUpload");
+            started = true;
+            final ServerSocket listening = server;
+            worker = new Thread(() -> loop(listening), "SivenyuUpload");
             worker.setDaemon(true);
             worker.start();
             Log.i(TAG, "上传服务已启动，端口 " + port);
@@ -114,7 +122,7 @@ final class UploadServer {
         }
     }
 
-    void stop() {
+    synchronized void stop() {
         running = false;
         try {
             if (server != null) server.close();
@@ -122,7 +130,10 @@ final class UploadServer {
             // 关闭时的异常无需处理
         }
         server = null;
-        worker = null;
+        if (activeClient != null) {
+            try { activeClient.close(); } catch (IOException ignored) { }
+            activeClient = null;
+        }
         Log.i(TAG, "上传服务已停止");
     }
 
@@ -130,16 +141,23 @@ final class UploadServer {
         return running;
     }
 
-    private void loop() {
-        while (running) {
+    private void loop(ServerSocket listening) {
+        while (running && server == listening) {
             Socket client = null;
             try {
-                client = server.accept();
+                client = listening.accept();
+                synchronized (this) {
+                    if (!running || server != listening) break;
+                    activeClient = client;
+                }
                 client.setSoTimeout(60_000);
                 handle(client);
             } catch (IOException failed) {
                 if (running) Log.w(TAG, "连接处理失败", failed);
             } finally {
+                synchronized (this) {
+                    if (activeClient == client) activeClient = null;
+                }
                 if (client != null) {
                     try {
                         client.close();
@@ -191,7 +209,7 @@ final class UploadServer {
             writeResponse(out, 200, "text/html; charset=utf-8", body);
             return;
         }
-        if (!"/upload".equals(target)) {
+        if (!"/upload".equals(target) && !"/cancel".equals(target)) {
             writeResponse(out, 404, "text/plain; charset=utf-8",
                     "not found".getBytes(StandardCharsets.UTF_8));
             return;
@@ -202,11 +220,42 @@ final class UploadServer {
                     "缺少或错误的会话令牌".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        receive(out, in, headers, param(query, "name"));
+        String id = param(query, "id");
+        if (id == null || !id.matches("[A-Za-z0-9_-]{12,80}")) {
+            fail(out, "上传标识无效，请重新扫码");
+            return;
+        }
+        if ("/cancel".equals(target)) {
+            if ("complete".equals(uploads.get(id))) {
+                writeResponse(out, 409, "text/plain; charset=utf-8",
+                        "电视已接收完成，文件已保留".getBytes(StandardCharsets.UTF_8));
+            } else if (!uploads.containsKey(id) && uploads.size() >= MAX_UPLOADS) {
+                writeResponse(out, 429, "text/plain; charset=utf-8",
+                        "本次文件数量已达上限，请重新打开电视上传窗口".getBytes(StandardCharsets.UTF_8));
+            } else {
+                // A tombstone also rejects an aborted request still waiting in the accept queue.
+                uploads.put(id, "cancelled");
+                writeResponse(out, 200, "text/plain; charset=utf-8",
+                        "已取消上传，未完成文件不会入库".getBytes(StandardCharsets.UTF_8));
+            }
+            return;
+        }
+        if (uploads.containsKey(id)) {
+            writeResponse(out, 409, "text/plain; charset=utf-8",
+                    "该上传已处理或已取消".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (uploads.size() >= MAX_UPLOADS) {
+            writeResponse(out, 429, "text/plain; charset=utf-8",
+                    "本次文件数量已达上限，请重新打开电视上传窗口".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        uploads.put(id, "receiving");
+        receive(out, in, headers, param(query, "name"), id);
     }
 
     private void receive(OutputStream out, InputStream in,
-                         Map<String, String> headers, String rawName) throws IOException {
+                         Map<String, String> headers, String rawName, String id) throws IOException {
         if (rawName == null || rawName.trim().isEmpty()) {
             fail(out, "缺少文件名");
             return;
@@ -243,35 +292,40 @@ final class UploadServer {
         File dir = video ? videoDir : imageDir;
         //noinspection ResultOfMethodCallIgnored
         dir.mkdirs();
-        File file = unique(dir, name);
-
-        long remaining = length;
-        try (FileOutputStream stream = new FileOutputStream(file)) {
-            byte[] buffer = new byte[64 * 1024];
-            while (remaining > 0) {
-                int want = (int) Math.min(buffer.length, remaining);
-                int read = in.read(buffer, 0, want);
-                if (read < 0) break;
-                stream.write(buffer, 0, read);
-                remaining -= read;
-                // 按实际写入量累加，而不是按声明的Content-Length，
-                // 避免伪造长度绕过会话总量上限。
-                received.addAndGet(read);
+        File stagingDir = new File(dir, ".uploads");
+        if (!stagingDir.isDirectory() && !stagingDir.mkdirs()) throw new IOException("无法创建上传暂存目录");
+        File partial = File.createTempFile("incoming-", ".part", stagingDir);
+        boolean complete = false;
+        try {
+            long remaining = length;
+            try (FileOutputStream stream = new FileOutputStream(partial)) {
+                byte[] buffer = new byte[64 * 1024];
+                while (remaining > 0 && running) {
+                    int read = in.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                    if (read < 0) throw new IOException("传输中断");
+                    stream.write(buffer, 0, read);
+                    remaining -= read;
+                    received.addAndGet(read);
+                }
+                if (remaining != 0) throw new IOException("上传已停止");
+            }
+            File file;
+            synchronized (this) {
+                if (!running) throw new IOException("上传已停止");
+                file = unique(dir, name);
+                if (!partial.renameTo(file)) throw new IOException("无法保存上传文件");
+                complete = true;
+                uploads.put(id, "complete");
+            }
+            Log.i(TAG, "收到" + (video ? "视频 " : "图片 ") + file.getName() + " " + length + " 字节");
+            if (listener != null) listener.onFile(file, video);
+            writeResponse(out, 200, "text/plain; charset=utf-8", "ok".getBytes(StandardCharsets.UTF_8));
+        } finally {
+            if (!complete) {
+                uploads.put(id, "failed");
+                if (partial.exists() && !partial.delete()) Log.w(TAG, "未能清理上传暂存文件");
             }
         }
-
-        if (remaining > 0) {
-            //noinspection ResultOfMethodCallIgnored
-            file.delete();
-            fail(out, "传输中断");
-            return;
-        }
-
-        Log.i(TAG, "收到" + (video ? "视频 " : "图片 ") + file.getName()
-                + " " + length + " 字节 -> " + file.getAbsolutePath());
-        if (listener != null) listener.onFile(file, video);
-        writeResponse(out, 200, "text/plain; charset=utf-8",
-                "ok".getBytes(StandardCharsets.UTF_8));
     }
 
     private static void fail(OutputStream out, String message) throws IOException {
@@ -358,14 +412,14 @@ final class UploadServer {
     }
 
     private static boolean isVideo(String name) {
-        String lower = name.toLowerCase(Locale.ROOT);
-        return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
-                || lower.endsWith(".mov") || lower.endsWith(".m4v") || lower.endsWith(".avi");
+        return MediaLibrary.isVideo(name);
     }
 
     private static void writeResponse(OutputStream out, int code, String type, byte[] body)
             throws IOException {
-        String status = code == 200 ? "OK" : (code == 404 ? "Not Found" : "Bad Request");
+        String status = code == 200 ? "OK" : code == 403 ? "Forbidden"
+                : code == 404 ? "Not Found" : code == 409 ? "Conflict"
+                : code == 429 ? "Too Many Requests" : "Bad Request";
         String head = "HTTP/1.1 " + code + " " + status + "\r\n"
                 + "Content-Type: " + type + "\r\n"
                 + "Content-Length: " + body.length + "\r\n"
@@ -376,56 +430,177 @@ final class UploadServer {
         out.flush();
     }
 
-    /** 手机端页面：深色、单列、带每个文件的进度条。令牌由服务端注入到上传请求里。 */
+    /** Phone upload queue with an explicit hold-to-cancel action for each file. */
     private String page() {
-        final String tk = token;
-        StringBuilder html = new StringBuilder(2600);
-        html.append("<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>");
-        html.append("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-        html.append("<title>上传到电视</title><style>");
-        html.append("*{box-sizing:border-box}");
-        html.append("body{margin:0;padding:26px 18px 44px;background:#12161C;color:#E8ECF2;");
-        html.append("font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif}");
-        html.append("h1{font-size:21px;margin:0 0 8px;font-weight:600}");
-        html.append("p.sub{font-size:13px;color:#8A94A6;margin:0 0 22px;line-height:1.7}");
-        html.append("label.pick{display:block;padding:20px;border:1px dashed #3A4553;");
-        html.append("border-radius:14px;text-align:center;color:#AAB4C4;font-size:16px;margin-bottom:20px}");
-        html.append("label.pick:active{border-color:#F1683A;color:#F1683A}");
-        html.append("input[type=file]{display:none}");
-        html.append(".item{padding:13px 15px;background:#1A2029;border-radius:11px;");
-        html.append("margin-bottom:11px;font-size:14px;word-break:break-all}");
-        html.append(".bar{height:4px;background:#2A323D;border-radius:2px;margin-top:9px;overflow:hidden}");
-        html.append(".fill{height:100%;width:0;background:#F1683A;transition:width .2s}");
-        html.append(".ok{color:#5FBF7F;font-size:13px;margin-top:7px}");
-        html.append(".err{color:#E86A62;font-size:13px;margin-top:7px}");
-        html.append("</style></head><body>");
-        html.append("<h1>上传到电视</h1>");
-        html.append("<p class='sub'>选图片存进壁纸库，选视频存进屏保素材，都可以多选。<br>");
-        html.append("手机和电视要在同一个 Wi-Fi 下。</p>");
-        html.append("<label class='pick' for='f'>＋ 选择文件</label>");
-        html.append("<input type='file' id='f' accept='image/*,video/*' multiple>");
-        html.append("<div id='list'></div><script>");
-        html.append("const input=document.getElementById('f'),list=document.getElementById('list');");
-        html.append("input.addEventListener('change',()=>{");
-        html.append("for(const f of input.files){upload(f);}input.value='';});");
-        html.append("function upload(file){");
-        html.append("const row=document.createElement('div');row.className='item';");
-        html.append("row.innerHTML='<div>'+file.name+'</div>");
-        html.append("<div class=\\'bar\\'><div class=\\'fill\\'></div></div>';");
-        html.append("list.appendChild(row);");
-        html.append("const fill=row.querySelector('.fill');");
-        html.append("const xhr=new XMLHttpRequest();");
-        html.append("xhr.open('POST','/upload?t='+tk+'&name='+encodeURIComponent(file.name));");
-        html.append("xhr.upload.onprogress=e=>{if(e.lengthComputable){");
-        html.append("fill.style.width=(e.loaded/e.total*100).toFixed(1)+'%';}};");
-        html.append("xhr.onload=()=>{if(xhr.status===200){fill.style.width='100%';");
-        html.append("row.insertAdjacentHTML('beforeend','<div class=\\'ok\\'>完成</div>');}");
-        html.append("else{row.insertAdjacentHTML('beforeend','<div class=\\'err\\'>失败：'");
-        html.append("+xhr.responseText+'</div>');}};");
-        html.append("xhr.onerror=()=>row.insertAdjacentHTML('beforeend',");
-        html.append("'<div class=\\'err\\'>网络中断，检查是否同一 Wi-Fi</div>');");
-        html.append("xhr.send(file);}");
-        html.append("</script></body></html>");
-        return html.toString();
+        return """
+                <!DOCTYPE html>
+                <html lang="zh-CN"><head><meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>上传到电视</title>
+                <style>
+                *{box-sizing:border-box}body{margin:0;padding:26px 18px 44px;background:#12161c;
+                color:#e8ecf2;font-family:-apple-system,'PingFang SC',sans-serif}
+                h1{font-size:21px;margin:0 0 8px;font-weight:600}
+                .sub{font-size:13px;color:#a5afbd;line-height:1.8;margin:0 0 22px}
+                .pick{display:block;padding:20px;border:1px dashed #59677a;border-radius:14px;
+                text-align:center;font-size:16px;margin-bottom:16px}
+                .pick:active{background:#232c39}input[type=file]{display:none}
+                #summary{font-size:12px;color:#9ca9ba;margin:0 0 16px}
+                .item{padding:15px;background:#1a2029;border:1px solid #29313e;border-radius:13px;margin:0 0 12px}
+                .name{font-size:14px;word-break:break-all;line-height:1.6}
+                .meta{font-size:12px;color:#8795a9;margin-top:3px}
+                .bar{height:4px;background:#303a48;border-radius:4px;margin:12px 0;overflow:hidden}
+                .fill{height:100%;width:0;background:#8dbce7;transition:width .15s}
+                .bottom{display:flex;align-items:center;gap:12px;justify-content:space-between}
+                .status{font-size:12px;color:#a7b3c3;line-height:1.6;flex:1;word-break:break-word}
+                .status.ok{color:#8ed2a6}.status.err{color:#f19c95}
+                button{position:relative;overflow:hidden;flex-shrink:0;min-height:42px;padding:10px 14px;
+                border:1px solid #6c494b;border-radius:10px;background:#2c2227;color:#efb7b2;
+                font:inherit;font-size:12px;touch-action:pan-y;user-select:none;-webkit-user-select:none;
+                -webkit-touch-callout:none}button::before{content:'';position:absolute;inset:0;
+                background:#ed9c8d26;transform:scaleX(0);transform-origin:left;pointer-events:none}
+                button.holding::before{animation:hold .7s linear forwards}
+                button:focus-visible{outline:2px solid #b4d6fa;outline-offset:3px}
+                button:disabled{opacity:.65}button[hidden]{display:none}
+                @keyframes hold{to{transform:scaleX(1)}}
+                @media(prefers-reduced-motion:reduce){.fill{transition:none}}
+                </style></head><body>
+                <h1>上传到电视</h1>
+                <p class="sub">手机和电视连接同一个 Wi-Fi，图片存入壁纸库，视频存入屏保素材。<br>
+                每次上传一个文件；按住文件旁的「长按取消」约 0.7 秒，可取消发送或等待中的文件。</p>
+                <label class="pick" for="files">＋ 选择图片或视频</label>
+                <input type="file" id="files" accept="image/*,video/*" multiple>
+                <div id="summary" role="status">等待选择文件</div><div id="list"></div>
+                <script>
+                const token='{{UPLOAD_TOKEN}}',input=document.getElementById('files');
+                const list=document.getElementById('list'),summary=document.getElementById('summary');
+                const queue=[],tasks=[];let active=null,sequence=0;
+                function element(tag,cls,text){
+                  const node=document.createElement(tag);node.className=cls;
+                  if(text!==undefined)node.textContent=text;return node;
+                }
+                function updateSummary(){
+                  const waiting=tasks.filter(t=>t.state==='queued').length;
+                  const done=tasks.filter(t=>t.state==='done').length;
+                  const cancelled=tasks.filter(t=>t.state==='cancelled').length;
+                  summary.textContent=active
+                    ?(active.state==='cancelling'?'正在确认取消':'正在上传')+' · '+waiting+' 个等待'
+                    :'已完成 '+done+' 个 · 已取消 '+cancelled+' 个';
+                }
+                function clearHold(task){
+                  if(task.holdTimer)clearTimeout(task.holdTimer);
+                  task.holdTimer=null;task.button.classList.remove('holding');
+                  if(task.state==='queued'||task.state==='sending')task.button.textContent='长按取消';
+                }
+                function finish(task,state,text){
+                  if(!['queued','sending','cancelling'].includes(task.state))return;
+                  task.state=state;clearHold(task);task.button.hidden=true;
+                  task.status.className='status'+(state==='done'?' ok':state==='failed'?' err':'');
+                  task.status.textContent=text;
+                  if(state==='done')task.fill.style.width='100%';
+                  task.file=null;task.xhr=null;
+                  if(active===task)active=null;
+                  updateSummary();pump();
+                }
+                function confirmCancel(task){
+                  if(task.state==='queued'){finish(task,'cancelled','已取消，文件未发送');return;}
+                  if(task.state!=='sending')return;
+                  task.state='cancelling';clearHold(task);task.button.disabled=true;
+                  task.button.textContent='取消中…';task.status.textContent='已停止发送，正在确认…';
+                  updateSummary();task.xhr.abort();
+                  const request=new XMLHttpRequest();
+                  request.open('POST','/cancel?t='+token+'&id='+encodeURIComponent(task.id));
+                  request.timeout=15000;
+                  request.onload=()=>{
+                    if(request.status===200)finish(task,'cancelled','已取消，未完成文件不会入库');
+                    else if(request.status===409)finish(task,'done','电视已接收完成，文件已保留');
+                    else finish(task,'failed','已停止发送；取消结果未确认，请检查电视');
+                  };
+                  request.onerror=request.ontimeout=()=>finish(task,'failed',
+                    '已停止发送；取消结果未确认，请检查电视');
+                  request.send();
+                }
+                function startHold(task,x,y){
+                  if(!['queued','sending'].includes(task.state))return;
+                  clearHold(task);task.startX=x;task.startY=y;
+                  task.button.textContent='继续按住…';task.button.classList.add('holding');
+                  task.holdTimer=setTimeout(()=>confirmCancel(task),700);
+                }
+                function bindHold(task){
+                  const button=task.button;
+                  button.addEventListener('pointerdown',event=>{
+                    if(!event.isPrimary||event.button!==0)return;
+                    startHold(task,event.clientX,event.clientY);
+                    try{button.setPointerCapture(event.pointerId);}catch(ignore){}
+                  });
+                  button.addEventListener('pointermove',event=>{
+                    if(task.holdTimer&&Math.hypot(event.clientX-task.startX,event.clientY-task.startY)>12)
+                      clearHold(task);
+                  });
+                  for(const type of ['pointerup','pointercancel','lostpointercapture'])
+                    button.addEventListener(type,()=>clearHold(task));
+                  button.addEventListener('contextmenu',event=>event.preventDefault());
+                  button.addEventListener('click',event=>{
+                    event.preventDefault();
+                    if(['queued','sending'].includes(task.state))task.status.textContent='请按住按钮约 0.7 秒取消';
+                  });
+                  button.addEventListener('keydown',event=>{
+                    if(event.key==='Enter'||event.key===' '){
+                      event.preventDefault();if(!event.repeat)startHold(task,0,0);
+                    }
+                  });
+                  button.addEventListener('keyup',event=>{
+                    if(event.key==='Enter'||event.key===' '){event.preventDefault();clearHold(task);}
+                  });
+                  button.addEventListener('blur',()=>clearHold(task));
+                }
+                function enqueue(file){
+                  const row=element('div','item'),name=element('div','name',file.name);
+                  const meta=element('div','meta',(file.size/1024/1024).toFixed(1)+' MB');
+                  const bar=element('div','bar'),fill=element('div','fill'),bottom=element('div','bottom');
+                  const status=element('div','status','等待上传'),button=element('button','','长按取消');
+                  status.setAttribute('role','status');button.type='button';
+                  button.setAttribute('aria-label','按住约0.7秒取消上传 '+file.name);
+                  bar.appendChild(fill);bottom.append(status,button);row.append(name,meta,bar,bottom);
+                  list.appendChild(row);
+                  const task={id:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+'-'+(++sequence),
+                    file,state:'queued',row,fill,status,button,holdTimer:null,xhr:null};
+                  bindHold(task);tasks.push(task);queue.push(task);
+                }
+                function pump(){
+                  if(active)return;
+                  let task=null;
+                  while(queue.length){const candidate=queue.shift();if(candidate.state==='queued'){task=candidate;break;}}
+                  if(!task){updateSummary();return;}
+                  active=task;task.state='sending';task.status.textContent='正在发送 0%';
+                  const request=task.xhr=new XMLHttpRequest();
+                  request.open('POST','/upload?t='+token+'&id='+encodeURIComponent(task.id)
+                    +'&name='+encodeURIComponent(task.file.name));
+                  request.upload.onprogress=event=>{
+                    if(task.state!=='sending'||!event.lengthComputable)return;
+                    const percent=Math.round(event.loaded/event.total*100);
+                    task.fill.style.width=percent+'%';
+                    task.status.textContent=percent===100?'电视正在保存…':'正在发送 '+percent+'%';
+                  };
+                  request.onload=()=>{
+                    if(task.state!=='sending')return;
+                    if(request.status===200)finish(task,'done','完成');
+                    else finish(task,'failed','失败：'+(request.responseText||'电视未接收'));
+                  };
+                  request.onerror=request.ontimeout=request.onabort=()=>{
+                    if(task.state==='sending')finish(task,'failed','网络中断，请确认手机与电视仍在同一 Wi-Fi');
+                  };
+                  updateSummary();request.send(task.file);
+                }
+                input.addEventListener('change',()=>{
+                  for(const file of input.files)enqueue(file);
+                  input.value='';pump();
+                });
+                document.addEventListener('visibilitychange',()=>{
+                  if(document.hidden)tasks.forEach(clearHold);
+                });
+                window.addEventListener('blur',()=>tasks.forEach(clearHold));
+                </script></body></html>
+                """.replace("{{UPLOAD_TOKEN}}", token);
     }
 }
