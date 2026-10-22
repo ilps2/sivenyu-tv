@@ -258,7 +258,6 @@ public final class SaverPickerActivity extends TvActivity {
             // 清理已从壁纸库移除或已不存在的旧媒体路径，避免计数和轮播配置残留。
             SaverSelection.save(this, selected);
         }
-        refreshChecks();
 
         LinearLayout row = null;
         List<List<View>> rows = new ArrayList<>();
@@ -296,6 +295,9 @@ public final class SaverPickerActivity extends TvActivity {
             for (View tile : rows.get(0)) tile.setNextFocusUpId(tile.getId());
         }
 
+        // 必须等格子都 addView 进 grid 之后再刷：refreshChecks 是遍历 grid 子项找勾选标记的，
+        // 早一步调用时 grid 还是空的，初始已选项一个都画不出来。
+        refreshChecks();
         if (first != null) first.requestFocus();
         loadThumbs();
     }
@@ -379,6 +381,14 @@ public final class SaverPickerActivity extends TvActivity {
         tile.addView(thumb, new FrameLayout.LayoutParams(-1, -1));
         thumbViews.put(path, thumb);
 
+        // 选中框必须叠在缩略图「之上」：缩略图是不透明的整块，
+        // 画在 tile 背景上的描边会被完全盖掉（这也是之前聚焦也看不出框的原因）。
+        View frame = new View(this);
+        frame.setLayoutParams(new FrameLayout.LayoutParams(-1, -1));
+        frame.setVisibility(View.GONE);
+        tile.addView(frame);
+        tile.setTag(R.id.tag_frame, frame);
+
         TextView kind = label(video ? "视频" : "图片", 11, "sans-serif-medium", 0xFFFFFFFF);
         kind.setPadding(dp(8), dp(3), dp(8), dp(3));
         kind.setBackground(rounded(video ? 0xD9C0392B : 0xD91E88E5, 8));
@@ -422,7 +432,7 @@ public final class SaverPickerActivity extends TvActivity {
             refreshChecks();
         });
         tile.setOnFocusChangeListener((v, focused) -> {
-            tile.setBackground(focused ? ring(0x4DFFFFFF, 12) : rounded(0x1FFFFFFF, 12));
+            applyTileLook(tile);
             tile.animate().scaleX(focused ? 1.05f : 1f).scaleY(focused ? 1.05f : 1f)
                     .setDuration(130).start();
             if (focused) scrollIntoView(tile);
@@ -441,7 +451,12 @@ public final class SaverPickerActivity extends TvActivity {
                 Object tag = tile.getTag();
                 Object check = tile.getTag(R.id.tag_check);
                 if (!(tag instanceof String) || !(check instanceof View)) continue;
-                ((View) check).setVisibility(selected.contains(tag) ? View.VISIBLE : View.INVISIBLE);
+                boolean on = selected.contains(tag);
+                ((View) check).setVisibility(on ? View.VISIBLE : View.INVISIBLE);
+                // 未选中的缩略图压暗一档，选中的保持原亮度：一眼就能看出哪些在轮播里
+                ImageView thumb = thumbViews.get(tag);
+                if (thumb != null) thumb.setAlpha(on ? 1f : 0.78f);
+                applyTileLook(tile);
             }
         }
         status.setText("已选 " + selected.size() + " 项　·　共 " + entries.size() + " 项可用　·　确认键选择");
@@ -548,9 +563,48 @@ public final class SaverPickerActivity extends TvActivity {
     }
 
     private GradientDrawable ring(int color, int radiusDp) {
+        return ring(color, radiusDp, 2);
+    }
+
+    private GradientDrawable ring(int color, int radiusDp, int strokeDp) {
         GradientDrawable drawable = rounded(color, radiusDp);
-        drawable.setStroke(dp(2), 0xFFFFFFFF);
+        drawable.setStroke(dp(strokeDp), 0xFFFFFFFF);
         return drawable;
+    }
+
+    /** 只有描边、没有填充的圆角框，用来叠在缩略图上标「已选中」。 */
+    private GradientDrawable outline(int strokeColor, int radiusDp, int strokeDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(0x00000000);
+        drawable.setCornerRadius(dp(radiusDp));
+        drawable.setStroke(dp(strokeDp), strokeColor);
+        return drawable;
+    }
+
+    /**
+     * 格子的选中/聚焦外观。
+     *
+     * <p>选中的格子套一圈白色描边、缩略图保持原亮度；未选中的压暗一档。
+     * 只靠右上角那个小勾在 10 英寸电视上太难辨认，必须有整格的框。
+     */
+    private void applyTileLook(View tile) {
+        Object checkTag = tile.getTag(R.id.tag_check);
+        boolean selected = checkTag instanceof View && ((View) checkTag).getVisibility() == View.VISIBLE;
+        boolean focused = tile.hasFocus();
+        Object frameTag = tile.getTag(R.id.tag_frame);
+        if (!(frameTag instanceof View)) return;
+        View frame = (View) frameTag;
+        if (selected) {
+            // 已选中：常亮白框，聚焦时加粗
+            frame.setBackground(outline(0xFFFFFFFF, 12, focused ? 4 : 2));
+            frame.setVisibility(View.VISIBLE);
+        } else if (focused) {
+            // 未选中但聚焦：半透明细框，和选中态区分得开
+            frame.setBackground(outline(0x8CFFFFFF, 12, 2));
+            frame.setVisibility(View.VISIBLE);
+        } else {
+            frame.setVisibility(View.GONE);
+        }
     }
 
     private int dp(float value) {

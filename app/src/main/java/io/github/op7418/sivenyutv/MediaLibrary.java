@@ -132,15 +132,17 @@ final class MediaLibrary {
             } catch (RuntimeException ignored) { }
             if (height <= 0) height = Math.round(width * 9f / 16f);
             android.graphics.Bitmap bitmap = null;
-            // 优先取 2 秒处；太短的视频取不到就退回第一帧
-            for (long position : new long[]{2_000_000L, 0L}) {
-                try {
-                    bitmap = retriever.getScaledFrameAtTime(position,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, width, height);
-                } catch (RuntimeException unavailable) {
-                    bitmap = null;
+            // 先取第一帧：不需要往后解码，真机上是毫秒级。
+            // 之前固定取 2 秒处，4K 视频要把前面所有帧解一遍，实测要 15 秒，
+            // 用户进选择页看到的是一格灰块。
+            bitmap = grab(retriever, 0L, width, height);
+            if (bitmap == null || isBlank(bitmap)) {
+                // 片头可能是黑场，这时才值得花时间去取 2 秒处
+                android.graphics.Bitmap later = grab(retriever, 2_000_000L, width, height);
+                if (later != null) {
+                    if (bitmap != null) bitmap.recycle();
+                    bitmap = later;
                 }
-                if (bitmap != null) break;
             }
             if (bitmap == null) return null;
             if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
@@ -160,6 +162,44 @@ final class MediaLibrary {
         } finally {
             try { retriever.release(); } catch (Exception ignored) { }
         }
+    }
+
+    /**
+     * 取指定时间点的一帧；先用缩放到目标尺寸的接口，个别编码器不支持时退回整帧。
+     */
+    private static android.graphics.Bitmap grab(android.media.MediaMetadataRetriever retriever,
+                                                long position, int width, int height) {
+        try {
+            android.graphics.Bitmap scaled = retriever.getScaledFrameAtTime(position,
+                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, width, height);
+            if (scaled != null) return scaled;
+        } catch (RuntimeException unavailable) {
+            // 继续走整帧回退
+        }
+        try {
+            return retriever.getFrameAtTime(position,
+                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    /** 近乎纯色（片头黑场、白场）的帧不适合当缩略图。 */
+    private static boolean isBlank(android.graphics.Bitmap bitmap) {
+        int min = 255, max = 0;
+        int width = bitmap.getWidth(), height = bitmap.getHeight();
+        if (width <= 0 || height <= 0) return true;
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                int pixel = bitmap.getPixel(Math.min(width - 1, width * x / 8),
+                        Math.min(height - 1, height * y / 8));
+                int luminance = (((pixel >> 16) & 0xFF) * 30 + ((pixel >> 8) & 0xFF) * 59
+                        + (pixel & 0xFF) * 11) / 100;
+                min = Math.min(min, luminance);
+                max = Math.max(max, luminance);
+            }
+        }
+        return max - min < 12;
     }
 
     /**
