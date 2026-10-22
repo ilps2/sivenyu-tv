@@ -156,8 +156,9 @@ public final class FrameHomeActivity extends TvActivity {
         root.addView(buildStage(), stageParams);
         root.addView(buildDock(scrim), dockParams());
         wallpapers.setOnWallpaperChanged(glassDock::refreshBackdrop);
-        // 视频壁纸在播时，玻璃折射的取样要跟着当前帧走
-        wallpapersVideo.setTick(glassDock::refreshBackdrop);
+        // 不再让玻璃层定时取视频帧：TextureView.getBitmap 会同步阻塞主线程，
+        // 视频壁纸播放期间远程/触摸会整体失灵。
+        wallpapersVideo.setTick(null);
         root.addView(buildScreensaver(), new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 

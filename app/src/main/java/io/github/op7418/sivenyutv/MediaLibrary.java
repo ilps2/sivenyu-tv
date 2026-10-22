@@ -117,12 +117,26 @@ final class MediaLibrary {
         android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
         try {
             retriever.setDataSource(file.getAbsolutePath());
+            // 4K 源直接解整帧要十几秒，先按目标宽度解码成小图（API 27+ 才有）
+            int width = targetWidth > 0 ? targetWidth : 960;
+            int height = 0;
+            try {
+                String raw = retriever.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                String rawh = retriever.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                if (raw != null && rawh != null) {
+                    int w = Integer.parseInt(raw.trim()), h = Integer.parseInt(rawh.trim());
+                    if (w > 0 && h > 0) height = Math.max(1, Math.round(h * width / (float) w));
+                }
+            } catch (RuntimeException ignored) { }
+            if (height <= 0) height = Math.round(width * 9f / 16f);
             android.graphics.Bitmap bitmap = null;
             // 优先取 2 秒处；太短的视频取不到就退回第一帧
             for (long position : new long[]{2_000_000L, 0L}) {
                 try {
-                    bitmap = retriever.getFrameAtTime(position,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                    bitmap = retriever.getScaledFrameAtTime(position,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, width, height);
                 } catch (RuntimeException unavailable) {
                     bitmap = null;
                 }
@@ -130,10 +144,10 @@ final class MediaLibrary {
             }
             if (bitmap == null) return null;
             if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
-                int height = Math.max(1,
+                int scaledHeight = Math.max(1,
                         Math.round(bitmap.getHeight() * targetWidth / (float) bitmap.getWidth()));
                 android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(
-                        bitmap, targetWidth, height, true);
+                        bitmap, targetWidth, scaledHeight, true);
                 if (scaled != bitmap) {
                     bitmap.recycle();
                     bitmap = scaled;

@@ -53,6 +53,14 @@ final class FrameWallpapers {
     private final SharedPreferences prefs;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /**
+     * 抽视频帧单独一条线程。
+     *
+     * <p>4K 视频抽一帧在电视上要十几秒，如果和壁纸解码共用 worker，
+     * 面板里给视频格子抽缩略图就会把整条队列堵死——用户点图片时 decode 排不上队，
+     * 表现正是「点了图片换不过去」。
+     */
+    private final ExecutorService frames = Executors.newSingleThreadExecutor();
     private final List<Entry> entries = new ArrayList<>();
     private final List<Entry> catalog = new ArrayList<>();
     private final List<TextView> captions = new ArrayList<>();
@@ -312,6 +320,9 @@ final class FrameWallpapers {
             loadVideo(index, entry, request);
             return;
         }
+        // 切到图片时立刻停掉视频层：解码要几十到几百毫秒，
+        // 这期间如果视频还盖在屏幕上，用户看到的就是「点了图片没反应」。
+        video.stop();
         worker.execute(() -> {
             Bitmap bitmap = null;
             try { bitmap = decode(activity, entries.get(index).file, false); }
@@ -330,23 +341,26 @@ final class FrameWallpapers {
                 }
                 video.stop();
                 transition.animate().cancel();
-                if (transition.getDrawable() != null) photo.setImageDrawable(transition.getDrawable());
+                // 切图前先把过渡层彻底摘干净：它曾经因为动画被中断而残留旧图，
+                // 盖在 photo 上表现为「点了图片换不过去」。
                 transition.setImageDrawable(null);
+                transition.setAlpha(0f);
+                transition.setVisibility(View.GONE);
                 if (!hasImage || !active) {
                     photo.setImageBitmap(image);
                     WallpaperCrop.apply(photo, crop);
                     notifyWallpaperChanged();
                 } else {
-                    transition.setImageBitmap(image);
-                    WallpaperCrop.apply(transition, crop);
-                    transition.setAlpha(0f);
-                    transition.animate().alpha(1f).setDuration(700).withEndAction(() -> {
-                        photo.setImageBitmap(image);
-                        WallpaperCrop.apply(photo, crop);
-                        transition.setImageDrawable(null);
-                        transition.setAlpha(0f);
+                    // 新图先落到 photo 上再淡入：即使属性动画被系统掐断，图也已经换过了
+                    photo.setImageBitmap(image);
+                    WallpaperCrop.apply(photo, crop);
+                    photo.setAlpha(0f);
+                    photo.animate().alpha(1f).setDuration(400).start();
+                    handler.postDelayed(() -> {
+                        if (destroyed) return;
+                        photo.setAlpha(1f);
                         notifyWallpaperChanged();
-                    }).start();
+                    }, 420);
                 }
                 hasImage = true;
                 current = index;
@@ -366,41 +380,31 @@ final class FrameWallpapers {
         final java.io.File file = new java.io.File(userDir(), entry.file.substring(5));
         if (!file.isFile()) {
             loading = false;
+            android.util.Log.w("TvHome.Wallpaper", "视频缺失 " + file.getAbsolutePath());
             Serif.toast(activity, "视频文件不存在，跳过");
             schedule();
             return;
         }
-        worker.execute(() -> {
-            Bitmap poster = null;
-            try { poster = MediaLibrary.frame(file, 1920); }
-            catch (Exception | OutOfMemoryError unavailable) {
-                android.util.Log.w("TvHome.Wallpaper", "视频首帧失败", unavailable);
-            }
-            final Bitmap frame = poster;
-            handler.post(() -> {
-                if (destroyed || request != generation) {
-                    if (frame != null) frame.recycle();
-                    return;
-                }
-                loading = false;
-                if (frame != null) {
-                    photo.setImageBitmap(frame);
-                    // 首帧只是占位与玻璃取样用，铺满交给播放器，图片层自己居中裁切
-                    resetPhotoScale();
-                }
-                transition.animate().cancel();
-                transition.setImageDrawable(null);
-                hasImage = true;
-                current = index;
-                prefs.edit().putString("selected", entry.id).apply();
-                video.play(file.getAbsolutePath());
-                notifyWallpaperChanged();
-                refreshLabels();
-                android.util.Log.i("TvHome.Wallpaper", "Applied video " + entry.name
-                        + " rotating=" + rotating + " minutes=" + minutes);
-                schedule();
-            });
-        });
+        // 先起播再抽帧：4K 视频抽一帧在真机上要十几秒，等它会让「点了没反应」。
+        // 首帧只用来给玻璃 dock 做静态取样，晚一点刷上去无所谓。
+        loading = false;
+        transition.animate().cancel();
+        transition.setImageDrawable(null);
+        transition.setAlpha(0f);
+        transition.setVisibility(View.GONE);
+        photo.setAlpha(1f);
+        hasImage = true;
+        current = index;
+        prefs.edit().putString("selected", entry.id).apply();
+        video.play(file.getAbsolutePath());
+        notifyWallpaperChanged();
+        refreshLabels();
+        android.util.Log.i("TvHome.Wallpaper", "Applied video " + entry.name
+                + " rotating=" + rotating + " minutes=" + minutes);
+        schedule();
+        // 这里不再抽首帧：播放层铺满整个屏幕把 photo 完全盖住，首帧看不见；
+        // 玻璃 dock 取样优先取播放中的实时帧。抽帧还会长时间独占单线程 worker，
+        // 导致「视频 → 图片」时图片解码排不上队，表现就是点了图片换不过去。
     }
 
     /**
@@ -428,6 +432,15 @@ final class FrameWallpapers {
         notifyWallpaperChanged();
     }
 
+    /** 当前选中的是视频壁纸就继续播（面板关闭、从后台回来时用）。 */
+    private void resumeWallpaperVideo() {
+        if (destroyed || entries.isEmpty() || current < 0 || current >= entries.size()) return;
+        Entry entry = entries.get(current);
+        if (!entry.video) return;
+        java.io.File file = new java.io.File(userDir(), entry.file.substring(5));
+        if (file.isFile()) video.play(file.getAbsolutePath());
+    }
+
     private void schedule() {
         handler.removeCallbacks(rotate);
         if (active && !destroyed && !loading && rotating && entries.size() > 1
@@ -435,7 +448,13 @@ final class FrameWallpapers {
             handler.postDelayed(rotate, minutes * 60_000L);
     }
 
-    void resume() { active = true; video.resume(); schedule(); }
+    void resume() {
+        active = true;
+        // 面板期间可能被 stop 掉了，这里重新起播（不同路径时 play 会重开）
+        resumeWallpaperVideo();
+        video.resume();
+        schedule();
+    }
     void pause() {
         active = false;
         handler.removeCallbacks(rotate);
@@ -452,6 +471,7 @@ final class FrameWallpapers {
         video.release();
         transition.animate().cancel();
         worker.shutdownNow();
+        frames.shutdownNow();
         handler.removeCallbacksAndMessages(null);
     }
 
@@ -465,7 +485,17 @@ final class FrameWallpapers {
     void show(View returnFocus) {
         if (entries.isEmpty()) return;
         returnFocusAnchor = returnFocus;
-        if (dialog != null && dialog.isShowing()) return;
+        if (dialog != null && dialog.isShowing()) {
+            // 曾经出现「isShowing=true 但窗口已经不可见」的残留状态：后续每次点壁纸
+            // 都在这里直接 return，面板再也打不开。这种情况先清掉重来。
+            View decor = dialog.getWindow() == null ? null : dialog.getWindow().getDecorView();
+            if (decor != null && decor.isShown()) return;
+            try { dialog.dismiss(); } catch (RuntimeException ignored) { }
+            dialog = null;
+        }
+        // 面板打开期间一定要停掉视频层：TextureView 在播时窗口焦点会被拽回 Activity 主窗口，
+        // Dialog 收不到按键也收不到触摸，整个面板就「点不动」了。
+        video.stop();
         handler.removeCallbacks(rotate);
         captions.clear();
         thumbs.clear();
@@ -531,10 +561,11 @@ final class FrameWallpapers {
             ImageView thumb = new ImageView(activity);
             thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if (entries.get(i).video) {
-                // 抽帧要走 MediaMetadataRetriever，别在主线程上卡住面板
+                // 抽帧要走 MediaMetadataRetriever，别在主线程上卡住面板；
+                // 也不能占壁纸解码的那条队列，否则点了图片要等抽帧跑完才换
                 thumb.setBackgroundColor(0xFF30343A);
                 final int slot = i;
-                worker.execute(() -> {
+                frames.execute(() -> {
                     android.graphics.Bitmap frame = null;
                     try { frame = MediaLibrary.frame(new java.io.File(userDir(),
                             entries.get(slot).file.substring(5)), 360); }
@@ -554,14 +585,18 @@ final class FrameWallpapers {
                 catch (Exception unavailable) { thumb.setBackgroundColor(0xFF30343A); }
             }
             thumbs.add(thumb);
-            tile.addView(thumb, new LinearLayout.LayoutParams(-1, dp(70)));
+            tile.addView(thumb, new LinearLayout.LayoutParams(-1, dp(64)));
             TextView caption = label("", 12);
             caption.setGravity(Gravity.CENTER);
-            tile.addView(caption, new LinearLayout.LayoutParams(-1, dp(22)));
+            tile.addView(caption, new LinearLayout.LayoutParams(-1, dp(20)));
             captions.add(caption);
             GridLayout.LayoutParams p = new GridLayout.LayoutParams();
-            p.width = dp(148); p.height = dp(102);
-            p.rightMargin = dp(8); p.bottomMargin = dp(6);
+            // 5 列必须留出余量：面板内容宽 784dp，5×(142+6)=740dp。
+            // 之前写 148+8=156dp×5=780dp，刚好卡在 784dp 边界上，
+            // GridLayout 会判「列约束不一致」并永久丢弃一列约束，格子重叠错位，
+            // 点击落到重叠的格子上——表现就是「点图片换不过去」。
+            p.width = dp(142); p.height = dp(96);
+            p.rightMargin = dp(6); p.bottomMargin = dp(6);
             grid.addView(tile, p);
             tiles.add(tile);
         }
@@ -605,12 +640,16 @@ final class FrameWallpapers {
         gridScroll.setClipToPadding(false);
         panel.removeView(grid);
         gridScroll.addView(grid, new android.widget.ScrollView.LayoutParams(-1, -2));
-        panel.addView(gridScroll, new LinearLayout.LayoutParams(-1, dp(285)));
+        // 高度按「两行刚好放下」给（2×(96+6)=204dp），再多靠滚动。
+        // 面板整体必须留在 1080 屏内，否则底部会超出屏幕、那一片收不到点击。
+        panel.addView(gridScroll, new LinearLayout.LayoutParams(-1, dp(215)));
         dialog.setContentView(panel);
         dialog.setOnDismissListener(d -> {
             captions.clear();
             thumbs.clear();
             if (returnFocus != null) returnFocus.requestFocus();
+            // 面板关掉后把视频壁纸接上（选中的是视频的话）
+            resumeWallpaperVideo();
             schedule();
         });
         refreshLabels();
@@ -622,14 +661,20 @@ final class FrameWallpapers {
         // 面板重建（删壁纸后 dismiss 再 show）时首次聚焦常常落空，补一次并留日志
         dialog.getWindow().getDecorView().postDelayed(() -> {
             if (dialog == null || !dialog.isShowing()) return;
-            View decor = dialog.getWindow().getDecorView();
-            if (decor.findFocus() != null) return;
-            boolean ok = initial.requestFocus();
+            Window window = dialog.getWindow();
+            View decor = window.getDecorView();
+            // 视频壁纸刚停掉时 Activity 窗口会 relayout 把窗口焦点抢回去，
+            // 结果面板画出来了却收不到按键/触摸。这里重新把 FLAG_NOT_FOCUSABLE 清一遍，
+            // 强制 WindowManager 把焦点还给 Dialog。
+            window.setFlags(0, android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+            decor.setFocusableInTouchMode(true);
+            decor.requestFocus();
+            boolean ok = decor.findFocus() == null && initial.requestFocus();
             android.util.Log.i("TvHome.Wallpaper", "补焦点 shown=" + initial.isShown()
-                    + " focusable=" + initial.isFocusable() + " windowFocus=" + initial.hasWindowFocus()
-                    + " dialogFocus=" + dialog.getWindow().getDecorView().hasWindowFocus()
-                    + " result=" + ok + " now=" + decor.findFocus());
-        }, 200);
+                    + " windowFocus=" + decor.hasWindowFocus()
+                    + " retried=" + ok
+                    + " now=" + decor.findFocus());
+        }, 250);
     }
 
     /** 手机扫码上传：临时起一个局域网 HTTP 服务，二维码里就是地址。 */

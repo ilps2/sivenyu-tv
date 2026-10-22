@@ -148,12 +148,11 @@ final class Glass extends Drawable {
 
     /** 视频壁纸的当前帧；没有视频在播时返回 null。 */
     private Bitmap liveFrame() {
-        if (live == null || live.getVisibility() != View.VISIBLE || !live.isAvailable()) return null;
-        try {
-            return live.getBitmap();
-        } catch (RuntimeException | OutOfMemoryError unavailable) {
-            return null;
-        }
+        // 曾经用 TextureView.getBitmap() 来让玻璃折射跟着视频动，代价太大：
+        // 这个调用会同步等 GPU 把当前帧读回 CPU，视频播放期间每几百毫秒来一次，
+        // 主线程被反复阻塞，遥控器和触摸全部失灵——表现就是「视频壁纸一播桌面就点不动」。
+        // 现在视频壁纸的玻璃退回静态取样（用图片层的图），交互优先。
+        return null;
     }
 
     /** 切换壁纸时告诉玻璃层视频层在哪，视频在播就优先取它的画面。 */

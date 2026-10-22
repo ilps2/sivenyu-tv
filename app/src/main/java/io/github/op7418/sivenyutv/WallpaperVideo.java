@@ -27,6 +27,7 @@ final class WallpaperVideo {
     private String pending;
     private String current;
     private boolean released;
+    private int videoWidth, videoHeight;
     /** 视频在播时定期通知外部刷新玻璃取样。 */
     private Runnable tick;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -41,20 +42,47 @@ final class WallpaperVideo {
                 pending = null;
                 prepare(path);
             }
-            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) { }
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+                applyScale();
+            }
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
                 releasePlayer();
                 return true;
             }
             @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) { }
         });
+        // 布局变化（窗口尺寸/可见性）后要按新的 view 尺寸重算铺满比例
+        view.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> applyScale());
+    }
+
+    /**
+     * 铺满裁切。
+     *
+     * <p>{@code MediaPlayer.setVideoScalingMode} 对 TextureView 不起作用（它只管 SurfaceView 的
+     * 显示矩形），TextureView 一律按视频原始宽高比在自身范围内 letterbox，竖屏视频上屏就变成
+     * 中间一条、两侧黑边。这里用 {@link TextureView#setTransform} 给内容套一个「短边贴满」的矩阵。
+     *
+     * <p>不要改成放大 TextureView 自身的尺寸：竖屏视频会把视图撑到 1920×3413，
+     * GPU 每帧合成这么大的层会把主线程拖死，遥控器和触摸全部失灵。
+     */
+    private void applyScale() {
+        int vw = videoWidth, vh = videoHeight;
+        int width = view.getWidth(), height = view.getHeight();
+        if (vw <= 0 || vh <= 0 || width <= 0 || height <= 0) return;
+        float scale = Math.max(width / (float) vw, height / (float) vh);
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        // 以 view 中心为锚点缩放：多出来的部分上下（或左右）均分裁掉
+        matrix.setScale(scale, scale, width / 2f, height / 2f);
+        view.setTransform(matrix);
+        Log.i(TAG, "视频壁纸铺满 " + vw + "x" + vh + " 视图 " + width + "x" + height
+                + " scale=" + scale);
     }
 
     View view() {
         return view;
     }
 
-    /** 视频在播时每 400ms 回调一次，用于刷新玻璃折射的取样。 */
+    /** 视频在播时每隔一段时间回调一次，用于刷新玻璃折射的取样。 */
     void setTick(Runnable listener) {
         tick = listener;
         if (tick != null) {
@@ -63,7 +91,7 @@ final class WallpaperVideo {
                 @Override public void run() {
                     if (released || current == null || listener == null) return;
                     listener.run();
-                    handler.postDelayed(this, 400L);
+                    handler.postDelayed(this, 800L);
                 }
             };
         }
@@ -109,9 +137,16 @@ final class WallpaperVideo {
             player.setOnPreparedListener(prepared -> {
                 if (released || player != WallpaperVideo.this.player) return;
                 view.setVisibility(View.VISIBLE);
+                videoWidth = prepared.getVideoWidth();
+                videoHeight = prepared.getVideoHeight();
+                // 延后一拍再算：刚 setVisibility(VISIBLE) 时 view 还没测量，尺寸是 0，
+                // 立刻算会直接 return，视频就退回 letterbox（竖屏视频两侧黑边）。
+                view.post(WallpaperVideo.this::applyScale);
+                view.postDelayed(WallpaperVideo.this::applyScale, 250L);
                 prepared.start();
                 startTick();
-                Log.i(TAG, "视频壁纸开始播放 " + path);
+                Log.i(TAG, "视频壁纸开始播放 " + path + " " + videoWidth + "x" + videoHeight
+                        + " view=" + view.getWidth() + "x" + view.getHeight());
             });
             player.setOnErrorListener((failed, what, extra) -> {
                 Log.w(TAG, "视频壁纸播放失败 " + path + " what=" + what + " extra=" + extra);
@@ -130,8 +165,11 @@ final class WallpaperVideo {
     void stop() {
         current = null;
         pending = null;
+        videoWidth = 0;
+        videoHeight = 0;
         stopTick();
         releasePlayer();
+        view.setTransform(null);
         view.setVisibility(View.GONE);
     }
 
@@ -142,7 +180,7 @@ final class WallpaperVideo {
     private void startTick() {
         handler.removeCallbacks(tick);
         if (tick == null) return;
-        handler.postDelayed(tick, 400L);
+        handler.postDelayed(tick, 800L);
     }
 
     private void stopTick() {
@@ -168,16 +206,31 @@ final class WallpaperVideo {
         view.setVisibility(View.GONE);
     }
 
+    /**
+     * 释放播放器必须在后台线程做。
+     *
+     * <p>{@code MediaPlayer.reset()/release()} 在 {@code prepareAsync()} 还没回调时会同步等待，
+     * 在电视上能卡住主线程好几秒——表现为「点一下没反应」「壁纸面板点不开」。
+     */
+    private static final java.util.concurrent.ExecutorService CLEANER =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
     private void releasePlayer() {
-        MediaPlayer player = this.player;
+        final MediaPlayer player = this.player;
         this.player = null;
-        if (player != null) {
-            try { player.reset(); } catch (Exception ignored) { }
-            try { player.release(); } catch (Exception ignored) { }
-        }
+        // Surface 立刻在主线程放手：TextureView 可能把同一个 SurfaceTexture 复用给下一次播放，
+        // 如果拖到后台线程才 release，会把新起的播放器的 surface 一起 detach（-10104）。
         if (surface != null) {
-            try { surface.release(); } catch (Exception ignored) { }
+            try { surface.release(); } catch (RuntimeException ignored) { }
             surface = null;
         }
+        if (player == null) return;
+        try { player.setOnPreparedListener(null); } catch (RuntimeException ignored) { }
+        try { player.setOnErrorListener(null); } catch (RuntimeException ignored) { }
+        // MediaPlayer.reset()/release() 在 prepareAsync 回调前会同步等待，必须丢到后台
+        CLEANER.execute(() -> {
+            try { player.reset(); } catch (RuntimeException ignored) { }
+            try { player.release(); } catch (RuntimeException ignored) { }
+        });
     }
 }
