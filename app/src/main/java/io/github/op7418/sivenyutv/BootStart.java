@@ -128,7 +128,7 @@ public final class BootStart {
                         "电视系统设置",
                         "开机自动进入：" + (on ? "已开启" : "已关闭"),
                         "屏幕保护：" + ScreenSaver.label(a),
-                        "屏保内容：" + (saverCount > 0 ? saverCount + " 项本地文件" : "内置图（未选择）"),
+                        "媒体库：壁纸 / 屏保（屏保已选 " + saverCount + " 项）",
                         "立即播放屏保",
                         "更多（图标 · 屏保归属 · 接管 Home）"
                 }, (dialog, index) -> {
@@ -143,7 +143,7 @@ public final class BootStart {
                         try {
                             a.startActivity(new Intent(a, SaverPickerActivity.class));
                         } catch (RuntimeException unavailable) {
-                            Serif.toast(a, "打不开屏保内容选择");
+                            Serif.toast(a, "打不开媒体库");
                         }
                     } else if (index == 4) {
                         try {

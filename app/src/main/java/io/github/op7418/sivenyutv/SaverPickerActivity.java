@@ -26,10 +26,17 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 屏保内容选择页：本地图片 + 本地视频，多选，按勾选顺序播放。
+ * 媒体库：壁纸和屏保共用的一个多选页面。
  *
- * 与壁纸不同，这里不复制文件（视频动辄几个 G），只记录绝对路径；
- * 播放时若文件不存在会跳过。所以 U 盘里的视频拔掉后要在本页重新选。
+ * <p>交互是「先勾选，再选用途」：
+ * <ul>
+ *   <li>只选一张 → 设为壁纸（固定，关掉自动轮播）</li>
+ *   <li>选多张 → 壁纸轮播（存进 {@link WallpaperPool} 并开启轮播）</li>
+ *   <li>选多张 → 屏保轮播（存进 {@link SaverSelection}）</li>
+ * </ul>
+ *
+ * <p>壁纸池存的是相对标识（{@code file:文件名} / {@code asset:相对路径}），
+ * 不存绝对路径——旧版屏保选择存绝对路径，目录一变整批勾选就被判失效清空。
  */
 public final class SaverPickerActivity extends TvActivity {
     private static final int MAX_FOUND = 100;
@@ -65,12 +72,17 @@ public final class SaverPickerActivity extends TvActivity {
         header.setGravity(Gravity.BOTTOM);
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(label("屏保内容", 28, "sans-serif-light", 0xFFFFFFFF));
+        texts.addView(label("媒体库", 28, "sans-serif-light", 0xFFFFFFFF));
         status = label("正在扫描存储…", 13, "sans-serif", 0x8AFFFFFF);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2);
         statusParams.topMargin = dp(6);
         texts.addView(status, statusParams);
         header.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
+        // 轮播间隔和画面位置这些还留在桌面壁纸面板里，这里给一个直达入口
+        header.addView(toolButton("轮播间隔", this::chooseInterval));
+        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(-2, -2);
+        moreParams.leftMargin = dp(12);
+        header.addView(toolButton("壁纸设置", this::openWallpaperPanel), moreParams);
         LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
         headerParams.bottomMargin = dp(16);
         root.addView(header, headerParams);
@@ -101,7 +113,10 @@ public final class SaverPickerActivity extends TvActivity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setBackground(rounded(0x14FFFFFF, 30));
         bar.setPadding(dp(10), dp(7), dp(10), dp(7));
-        footerItem(bar, "保存", this::save);
+        // 先选，再选用途：单选可以设成固定壁纸，多选可以进轮播池
+        footerItem(bar, "设为壁纸", this::setAsWallpaper);
+        footerItem(bar, "壁纸轮播", this::startWallpaperRotation);
+        footerItem(bar, "屏保轮播", this::saveSaver);
         footerItem(bar, "全选", () -> {
             for (String[] entry : entries) {
                 if (selected.size() >= MAX_PICK) break;
@@ -113,7 +128,6 @@ public final class SaverPickerActivity extends TvActivity {
             selected.clear();
             refreshChecks();
         });
-        footerItem(bar, "取消", () -> finish());
 
         LinearLayout wrapper = new LinearLayout(this);
         wrapper.setOrientation(LinearLayout.HORIZONTAL);
@@ -454,7 +468,8 @@ public final class SaverPickerActivity extends TvActivity {
                 applyTileLook(tile);
             }
         }
-        status.setText("已选 " + selected.size() + " 项　·　共 " + entries.size() + " 项可用　·　确认键选择");
+        status.setText("已选 " + selected.size() + " 项　·　共 " + entries.size()
+                + " 项　·　确认键勾选　·　下方按钮决定用途");
     }
 
     private void loadThumbs() {
@@ -526,13 +541,111 @@ public final class SaverPickerActivity extends TvActivity {
         return MediaLibrary.frame(file, 400);
     }
 
-    private void save() {
-        SaverSelection.save(this, selected);
-        Serif.toast(this, selected.isEmpty()
-                ? "已清空，屏保将播放内置图" : "已保存 " + selected.size() + " 项");
+    /**
+     * 单选 → 设为当前固定壁纸。
+     *
+     * <p>实现上写成「池里只有这一张 + 关闭自动轮播」：壁纸侧只认轮播池，
+     * 这样不用再维护一套独立的「当前壁纸 id」状态。
+     */
+    private void setAsWallpaper() {
+        if (selected.size() != 1) {
+            Serif.toast(this, selected.isEmpty() ? "先选一张" : "设为壁纸只能选一张");
+            return;
+        }
+        String path = selected.iterator().next();
+        List<String> keys = new ArrayList<>();
+        keys.add(wallpaperKey(path));
+        WallpaperPool.save(this, keys);
+        setRotating(false);
+        Serif.toast(this, "已设为壁纸");
         setResult(RESULT_OK, new Intent());
         finish();
     }
+
+    /** 多选 → 进壁纸轮播池并开启自动轮播。 */
+    private void startWallpaperRotation() {
+        if (selected.size() < 2) {
+            Serif.toast(this, "轮播至少要选两张");
+            return;
+        }
+        List<String> keys = new ArrayList<>();
+        for (String path : selected) keys.add(wallpaperKey(path));
+        WallpaperPool.save(this, keys);
+        setRotating(true);
+        Serif.toast(this, "已轮播 " + keys.size() + " 张壁纸");
+        setResult(RESULT_OK, new Intent());
+        finish();
+    }
+
+    private void saveSaver() {
+        SaverSelection.save(this, selected);
+        Serif.toast(this, selected.isEmpty()
+                ? "已清空，屏保将播放内置图" : "已保存 " + selected.size() + " 项屏保内容");
+        setResult(RESULT_OK, new Intent());
+        finish();
+    }
+
+    /** 写壁纸侧的轮播开关（和壁纸面板共用同一份 prefs）。 */
+    private void setRotating(boolean on) {
+        getSharedPreferences("frame-wallpapers", MODE_PRIVATE)
+                .edit().putBoolean("rotating", on).apply();
+    }
+
+    /**
+     * 把界面上的路径换成跨界面稳定的相对标识，规则必须和
+     * {@code FrameWallpapers.poolKey} 完全一致，否则池里匹配不到任何一张。
+     */
+    private String wallpaperKey(String path) {
+        if (path.startsWith("asset:")) {
+            String rest = path.substring(6);
+            if (rest.startsWith("wallpapers/")) rest = rest.substring(11);
+            return "asset:" + rest;
+        }
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return "file:" + (slash >= 0 ? path.substring(slash + 1) : path);
+    }
+
+    /** 轮播间隔直接改壁纸面板那份 prefs，两个界面看到的是同一个值。 */
+    private void chooseInterval() {
+        final int[] options = {1, 5, 10, 15, 30, 60};
+        String[] labels = new String[options.length];
+        for (int i = 0; i < options.length; i++) labels[i] = options[i] + " 分钟";
+        int current = getSharedPreferences("frame-wallpapers", MODE_PRIVATE).getInt("minutes", 5);
+        int checked = 1;
+        for (int i = 0; i < options.length; i++) if (options[i] == current) checked = i;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("壁纸轮播间隔")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    getSharedPreferences("frame-wallpapers", MODE_PRIVATE)
+                            .edit().putInt("minutes", options[which]).apply();
+                    dialog.dismiss();
+                    Serif.toast(this, "间隔改为 " + options[which] + " 分钟");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 画面位置、本地导入、手机上传这些还在桌面壁纸面板里，跳回去打开它。 */
+    private void openWallpaperPanel() {
+        startActivity(new Intent(this, FrameHomeActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(FrameHomeActivity.EXTRA_OPEN_WALLPAPER, true));
+        finish();
+    }
+
+    private TextView toolButton(String name, Runnable action) {
+        TextView button = label(name, 13, "sans-serif", 0xD9FFFFFF);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(18), dp(8), dp(18), dp(8));
+        button.setBackground(rounded(0x1FFFFFFF, 20));
+        button.setFocusable(true);
+        button.setId(View.generateViewId());
+        button.setOnClickListener(v -> action.run());
+        button.setOnFocusChangeListener((v, focused) ->
+                button.setBackground(rounded(focused ? 0x4DFFFFFF : 0x1FFFFFFF, 20)));
+        return button;
+    }
+
 
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);

@@ -49,6 +49,8 @@ public final class FrameHomeActivity extends TvActivity {
     private static final String TAG = "SivenyuHome";
     private static final String PREFS = "aptv-home";
     private static final String KEY_FOCUS_PKG = "focus-pkg";
+    /** 媒体库点「壁纸设置」时会带这个 extra 绕回来，直接弹壁纸面板。 */
+    static final String EXTRA_OPEN_WALLPAPER = "open-wallpaper-panel";
     private static final String KEY_LAST_TILE = "last-tile";
     private static final String KEY_HINT_SHOWN = "hint-shown";
     private static final int REQUEST_PICK = 41;
@@ -220,7 +222,14 @@ public final class FrameHomeActivity extends TvActivity {
         // 视频壁纸在播时，玻璃折射取样改用视频当前帧
         dock.setLiveSource((android.view.TextureView) wallpapersVideo.view());
 
-        addDockItem(dock, "壁纸", () -> wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0)));
+        // 「壁纸」现在打开统一的媒体库：先勾选，再决定做壁纸还是屏保
+        addDockItem(dock, "壁纸", () -> {
+            try {
+                startActivity(new Intent(this, SaverPickerActivity.class));
+            } catch (RuntimeException unavailable) {
+                wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0));
+            }
+        });
         addDockItem(dock, "应用", this::openPicker);
         addDockItem(dock, "信号源", () -> {
             if (!XiaomiControls.showInputs(this)) message("暂时无法打开信号源");
@@ -873,6 +882,12 @@ public final class FrameHomeActivity extends TvActivity {
         endMoving(false);
         setIntent(intent);
         if (intent != null) intent.removeExtra(BootStart.EXTRA_BOOT_LAUNCH);
+        // 媒体库点「壁纸设置」绕回来时要直接弹出壁纸面板（画面位置/本地导入/手机上传都在那儿）
+        if (intent != null && intent.getBooleanExtra(EXTRA_OPEN_WALLPAPER, false)) {
+            intent.removeExtra(EXTRA_OPEN_WALLPAPER);
+            if (wallpapers != null) wallpapers.show(dockItems.isEmpty() ? null : dockItems.get(0));
+            return;
+        }
         // 作为默认桌面时按 Home 键会走到这里：把焦点放回应用行，而不是停在工具条上
         View target = lastTile != null ? lastTile : (tiles.isEmpty() ? null : tiles.get(0));
         if (target != null) target.requestFocus();

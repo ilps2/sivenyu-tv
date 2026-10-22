@@ -81,7 +81,58 @@ final class FrameWallpapers {
     private static final String KEY_HIDDEN = "hidden-entries";
     static final int REQUEST_LOCAL = 77;
     static final int REQUEST_CROP = 78;
-    private final Runnable rotate = () -> load(WallpaperCycle.next(current, entries.size()));
+    private final Runnable rotate = this::rotateNext;
+    /** 上一次看到的轮播池内容，用于从媒体库返回时判断要不要立刻换图。 */
+    private String poolSignature = "";
+
+    /**
+     * 轮播下一张：池里有 2 项以上就只在池内循环，否则退化成「全部可见项」轮播
+     * （没配置过池的老用户行为和以前一致）。
+     */
+    private void rotateNext() {
+        int next = nextInPool();
+        load(next >= 0 ? next : WallpaperCycle.next(current, entries.size()));
+    }
+
+    /** 池内下一张的下标；池里有效项少于 2 个时返回 -1。 */
+    private int nextInPool() {
+        List<Integer> indexes = poolIndexes();
+        if (indexes.size() < 2) return -1;
+        int position = indexes.indexOf(current);
+        return indexes.get((position + 1) % indexes.size());
+    }
+
+    /** 当前轮播池映射到 entries 的下标（保持池里的顺序）。 */
+    private List<Integer> poolIndexes() {
+        List<Integer> indexes = new ArrayList<>();
+        List<String> pool = WallpaperPool.list(activity);
+        if (pool.isEmpty()) return indexes;
+        for (int i = 0; i < entries.size(); i++) {
+            if (pool.contains(poolKey(entries.get(i)))) indexes.add(i);
+        }
+        return indexes;
+    }
+
+    /** 把条目换成跨界面稳定的相对标识（媒体库那边用同样的规则拼 key）。 */
+    private static String poolKey(Entry entry) {
+        if (entry.id.startsWith("user-")) return "file:" + entry.file.substring(5);
+        return "asset:" + entry.file;
+    }
+
+    /** 池变了（在媒体库里重新选过），并且当前壁纸不在池里，就换成池里第一张。 */
+    private void applyPoolIfChanged() {
+        // 媒体库里可能同时改了轮播开关和间隔，先把这两项同步过来
+        rotating = prefs.getBoolean("rotating", rotating);
+        minutes = WallpaperCycle.minutes(prefs.getInt("minutes", minutes));
+        String signature = String.join("\n", WallpaperPool.list(activity));
+        if (signature.equals(poolSignature)) return;
+        poolSignature = signature;
+        if (entries.isEmpty()) return;
+        List<Integer> indexes = poolIndexes();
+        if (indexes.isEmpty()) return;
+        if (indexes.contains(current)) return;
+        load(indexes.get(0));
+    }
 
     FrameWallpapers(Activity activity, ImageView photo, ImageView transition, WallpaperVideo video) {
         this.activity = activity; this.photo = photo; this.transition = transition;
@@ -450,6 +501,8 @@ final class FrameWallpapers {
 
     void resume() {
         active = true;
+        // 从媒体库选完返回时，池可能变了
+        applyPoolIfChanged();
         // 面板期间可能被 stop 掉了，这里重新起播（不同路径时 play 会重开）
         resumeWallpaperVideo();
         video.resume();

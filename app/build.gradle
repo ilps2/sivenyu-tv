@@ -7,8 +7,8 @@ android {
         applicationId 'io.github.op7418.sivenyutv'
         minSdk 26
         targetSdk 34
-        versionCode 243
-        versionName "2.8.8-aptv"
+        versionCode 244
+        versionName "2.9.0-aptv"
     }
     signingConfigs {
         release {
