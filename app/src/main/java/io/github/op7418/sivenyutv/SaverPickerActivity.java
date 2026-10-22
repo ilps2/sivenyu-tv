@@ -381,7 +381,7 @@ public final class SaverPickerActivity extends TvActivity {
         tile.addView(thumb, new FrameLayout.LayoutParams(-1, -1));
         thumbViews.put(path, thumb);
 
-        // 选中框必须叠在缩略图「之上」：缩略图是不透明的整块，
+        // 聚焦框叠在缩略图「之上」：缩略图是不透明的整块，
         // 画在 tile 背景上的描边会被完全盖掉（这也是之前聚焦也看不出框的原因）。
         View frame = new View(this);
         frame.setLayoutParams(new FrameLayout.LayoutParams(-1, -1));
@@ -397,17 +397,6 @@ public final class SaverPickerActivity extends TvActivity {
         kindParams.leftMargin = dp(8);
         tile.addView(kind, kindParams);
 
-        TextView check = label("✓", 20, "sans-serif-medium", 0xFFFFFFFF);
-        check.setGravity(Gravity.CENTER);
-        check.setBackground(rounded(0xE61E88E5, 20));
-        check.setVisibility(View.INVISIBLE);
-        FrameLayout.LayoutParams checkParams = new FrameLayout.LayoutParams(dp(30), dp(30),
-                Gravity.TOP | Gravity.END);
-        checkParams.topMargin = dp(8);
-        checkParams.rightMargin = dp(8);
-        tile.addView(check, checkParams);
-        tile.setTag(R.id.tag_check, check);
-
         TextView name = label(label, 11, "sans-serif", 0xFFFFFFFF);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -418,6 +407,7 @@ public final class SaverPickerActivity extends TvActivity {
         nameParams.rightMargin = dp(6);
         nameParams.bottomMargin = dp(6);
         tile.addView(name, nameParams);
+        tile.setTag(R.id.tag_name, name);
 
         tile.setOnClickListener(v -> {
             if (selected.contains(path)) {
@@ -449,13 +439,12 @@ public final class SaverPickerActivity extends TvActivity {
             for (int j = 0; j < line.getChildCount(); j++) {
                 View tile = line.getChildAt(j);
                 Object tag = tile.getTag();
-                Object check = tile.getTag(R.id.tag_check);
-                if (!(tag instanceof String) || !(check instanceof View)) continue;
+                Object nameTag = tile.getTag(R.id.tag_name);
+                if (!(tag instanceof String) || !(nameTag instanceof TextView)) continue;
                 boolean on = selected.contains(tag);
-                ((View) check).setVisibility(on ? View.VISIBLE : View.INVISIBLE);
-                // 未选中的缩略图压暗一档，选中的保持原亮度：一眼就能看出哪些在轮播里
-                ImageView thumb = thumbViews.get(tag);
-                if (thumb != null) thumb.setAlpha(on ? 1f : 0.78f);
+                // 和壁纸面板同款：名字前面加 ✓，不再额外套常亮边框
+                CharSequence base = tile.getContentDescription();
+                ((TextView) nameTag).setText(on ? "✓ " + base : base);
                 applyTileLook(tile);
             }
         }
@@ -464,25 +453,32 @@ public final class SaverPickerActivity extends TvActivity {
 
     private void loadThumbs() {
         final List<String[]> targets = new ArrayList<>(entries);
-        new Thread(() -> {
-            for (String[] entry : targets) {
-                String path = entry[0];
-                boolean builtin = "1".equals(entry[3]);
-                Bitmap bitmap;
-                if (builtin) {
-                    bitmap = decodeAsset(path.substring(6));
-                } else if ("1".equals(entry[2])) {
-                    bitmap = videoFrame(new File(path));
-                } else {
-                    bitmap = decodeImage(new File(path));
-                }
-                if (bitmap == null) continue;
-                handler.post(() -> {
-                    ImageView view = thumbViews.get(path);
-                    if (view != null) view.setImageBitmap(bitmap);
-                });
+        // 图片/内置图和视频分两条线程：视频抽帧即使降到了几秒，也会把同一线程里
+        // 排在它后面的图片全堵住，表现就是「前几格有图，后面一整排是灰块」。
+        new Thread(() -> loadThumbRange(targets, false), "saver-thumbs").start();
+        new Thread(() -> loadThumbRange(targets, true), "saver-thumbs-video").start();
+    }
+
+    private void loadThumbRange(List<String[]> targets, boolean videoOnly) {
+        for (String[] entry : targets) {
+            String path = entry[0];
+            boolean builtin = "1".equals(entry[3]);
+            boolean video = "1".equals(entry[2]);
+            if (videoOnly != (video && !builtin)) continue;
+            Bitmap bitmap;
+            if (builtin) {
+                bitmap = decodeAsset(path.substring(6));
+            } else if (video) {
+                bitmap = videoFrame(new File(path));
+            } else {
+                bitmap = decodeImage(new File(path));
             }
-        }, "saver-thumbs").start();
+            if (bitmap == null) continue;
+            handler.post(() -> {
+                ImageView view = thumbViews.get(path);
+                if (view != null) view.setImageBitmap(bitmap);
+            });
+        }
     }
 
     private Bitmap decodeAsset(String assetPath) {
@@ -582,25 +578,15 @@ public final class SaverPickerActivity extends TvActivity {
     }
 
     /**
-     * 格子的选中/聚焦外观。
-     *
-     * <p>选中的格子套一圈白色描边、缩略图保持原亮度；未选中的压暗一档。
-     * 只靠右上角那个小勾在 10 英寸电视上太难辨认，必须有整格的框。
+     * 格子的聚焦外观，和壁纸面板保持同一套语言：
+     * 框只出现在「当前聚焦」的那一格，选中与否靠缩略图底部名字前的 ✓ 表示。
      */
     private void applyTileLook(View tile) {
-        Object checkTag = tile.getTag(R.id.tag_check);
-        boolean selected = checkTag instanceof View && ((View) checkTag).getVisibility() == View.VISIBLE;
-        boolean focused = tile.hasFocus();
         Object frameTag = tile.getTag(R.id.tag_frame);
         if (!(frameTag instanceof View)) return;
         View frame = (View) frameTag;
-        if (selected) {
-            // 已选中：常亮白框，聚焦时加粗
-            frame.setBackground(outline(0xFFFFFFFF, 12, focused ? 4 : 2));
-            frame.setVisibility(View.VISIBLE);
-        } else if (focused) {
-            // 未选中但聚焦：半透明细框，和选中态区分得开
-            frame.setBackground(outline(0x8CFFFFFF, 12, 2));
+        if (tile.hasFocus()) {
+            frame.setBackground(outline(0xFFFFFFFF, 12, 2));
             frame.setVisibility(View.VISIBLE);
         } else {
             frame.setVisibility(View.GONE);
