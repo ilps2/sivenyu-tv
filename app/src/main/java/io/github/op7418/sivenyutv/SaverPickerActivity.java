@@ -456,8 +456,8 @@ public final class SaverPickerActivity extends TvActivity {
         });
         tile.setOnFocusChangeListener((v, focused) -> {
             applyTileLook(tile);
-            tile.animate().scaleX(focused ? 1.05f : 1f).scaleY(focused ? 1.05f : 1f)
-                    .setDuration(130).start();
+            // 不做放大动画：格子本来就有 200dp 宽，放大 5% 后边缘那圈白框会被
+            // ScrollView 的滚动裁剪切掉，看起来像「选中框不全」
             if (focused) scrollIntoView(tile);
         });
         tile.setBackground(rounded(0x1FFFFFFF, 12));

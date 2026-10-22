@@ -65,6 +65,10 @@ final class FrameWallpapers {
     private final List<Entry> catalog = new ArrayList<>();
     private final List<TextView> captions = new ArrayList<>();
     private final List<ImageView> thumbs = new ArrayList<>();
+    /** 面板里的格子，挑选态下要给第一个格子抢焦点。 */
+    private final List<View> tiles = new ArrayList<>();
+    /** 「固定壁纸」按下去后进入挑选态，下一次点格子弹用途选择。 */
+    private boolean awaitingPick;
     private boolean rotating, active, loading, destroyed, hasImage;
     private int current, minutes, generation;
     private Dialog dialog;
@@ -81,8 +85,6 @@ final class FrameWallpapers {
     private static final String KEY_HIDDEN = "hidden-entries";
     static final int REQUEST_LOCAL = 77;
     static final int REQUEST_CROP = 78;
-    /** 媒体库单选，用于「固定壁纸」挑一张。 */
-    static final int REQUEST_PICK = 79;
     private final Runnable rotate = this::rotateNext;
     /** 上一次看到的轮播池内容，用于从媒体库返回时判断要不要立刻换图。 */
     private String poolSignature = "";
@@ -583,7 +585,8 @@ final class FrameWallpapers {
         panel.addView(note, noteParams);
         GridLayout grid = new GridLayout(activity);
         grid.setColumnCount(5);
-        List<View> tiles = new ArrayList<>();
+        tiles.clear();
+        awaitingPick = false;
         for (int i = 0; i < entries.size(); i++) {
             final int index = i;
             LinearLayout tile = new LinearLayout(activity);
@@ -611,6 +614,11 @@ final class FrameWallpapers {
             tile.setOnLongClickListener(v -> { confirmDelete(index); return true; });
             tile.setOnClickListener(v -> {
                 if (longPressed[0]) { longPressed[0] = false; return; }
+                if (awaitingPick) {
+                    awaitingPick = false;
+                    confirmPickedTarget(index);
+                    return;
+                }
                 setMode(false); load(index);
             });
             ImageView thumb = new ImageView(activity);
@@ -1051,7 +1059,7 @@ final class FrameWallpapers {
         if (autoButton == null) return;
         int target = rotationTarget();
         autoButton.setText(target < 0 ? "轮播范围" : "✓  轮播：" + rotationTargetLabel());
-        fixedButton.setText("固定壁纸…");
+        fixedButton.setText(awaitingPick ? "点下面选一张…" : "固定壁纸…");
         intervalButton.setText("间隔：" + minutes + " 分钟");
         for (int i = 0; i < captions.size(); i++)
             captions.get(i).setText((i == current ? "✓ " : "") + entries.get(i).name);
@@ -1126,63 +1134,55 @@ final class FrameWallpapers {
         return paths;
     }
 
-    /** 「固定壁纸」先去媒体库挑一张，挑完再问做壁纸、做屏保还是都做。 */
+    /**
+     * 「固定壁纸」不再跳二级页面：直接在面板下面的格子里挑。
+     *
+     * <p>按一下进入挑选态（按钮变「点下面选一张…」），这时点任意格子就弹
+     * 「设为壁纸 / 设为屏保 / 壁纸和屏保都用」；再按一次按钮取消挑选。
+     */
     private void pickSingleMedia() {
-        if (dialog != null && dialog.isShowing()) dialog.dismiss();
-        try {
-            android.content.Intent intent = new android.content.Intent(activity, SaverPickerActivity.class);
-            intent.putExtra(SaverPickerActivity.EXTRA_SINGLE, true);
-            activity.startActivityForResult(intent, REQUEST_PICK);
-        } catch (RuntimeException unavailable) {
-            Serif.toast(activity, "打不开媒体库");
-        }
+        awaitingPick = !awaitingPick;
+        Serif.toast(activity, awaitingPick ? "点下面的格子选一张" : "已取消挑选");
+        refreshLabels();
+        if (awaitingPick && !tiles.isEmpty()) tiles.get(0).requestFocus();
     }
 
-    /** 媒体库单选返回：问用途，然后落到壁纸 / 屏保 / 两者。 */
-    void onPickResult(android.content.Intent data) {
-        if (data == null) return;
-        final String path = data.getStringExtra(SaverPickerActivity.EXTRA_PICKED);
-        if (path == null || path.isEmpty()) return;
+    /** 挑选态下点格子：问用途，再落到壁纸 / 屏保 / 两者。 */
+    private void confirmPickedTarget(int index) {
+        final Entry entry = entries.get(index);
+        final String path = pathOf(entry);
         AlertDialog target = new AlertDialog.Builder(activity)
-                .setTitle("用这张做什么？")
+                .setTitle("「" + entry.name + "」用来做什么？")
                 .setItems(new String[]{"设为壁纸", "设为屏保", "壁纸和屏保都用"}, (dialog, which) -> {
                     boolean asWallpaper = which == 0 || which == 2;
                     boolean asSaver = which == 1 || which == 2;
-                    if (asWallpaper) applyPickedWallpaper(path);
-                    if (asSaver) SaverSelection.save(activity, java.util.Collections.singletonList(path));
+                    if (asWallpaper) {
+                        // 选「设为壁纸」是固定用这张，不是开轮播，所以范围记成 -1（关闭）
+                        prefs.edit().putInt("rotation-target", -1).apply();
+                        // 池概念取消：轮播就是全部素材，清掉旧的勾选池免得干扰
+                        WallpaperPool.clear(activity);
+                        poolSignature = "";
+                        setMode(false);
+                        load(index);
+                    }
+                    if (asSaver) {
+                        SaverSelection.save(activity, java.util.Collections.singletonList(path));
+                    }
                     Serif.toast(activity, which == 0 ? "已设为壁纸"
                             : which == 1 ? "已设为屏保" : "壁纸和屏保都设好了");
                 })
                 .show();
         Serif.applyTo(target);
         target.getWindow().getDecorView().post(() -> Serif.applyTo(target));
+        refreshLabels();
     }
 
-    private void applyPickedWallpaper(String path) {
-        prefs.edit().putInt("rotation-target", 0).apply();
-        setMode(false);
-        // 池概念取消：轮播就是全部素材，这里清掉旧的勾选池免得干扰
-        WallpaperPool.clear(activity);
-        poolSignature = "";
-        String key = keyOfPath(path);
-        for (int i = 0; i < entries.size(); i++) {
-            if (poolKey(entries.get(i)).equals(key)) {
-                load(i);
-                return;
-            }
+    /** 条目对应的屏保可用路径（本地绝对路径 / 内置 asset 前缀）。 */
+    private String pathOf(Entry entry) {
+        if (entry.id.startsWith("user-")) {
+            return new java.io.File(userDir(), entry.file.substring(5)).getAbsolutePath();
         }
-        Serif.toast(activity, "这张暂不支持作为壁纸");
-    }
-
-    /** 与媒体库那边的 wallpaperKey 规则一致。 */
-    private static String keyOfPath(String path) {
-        if (path.startsWith("asset:")) {
-            String rest = path.substring(6);
-            if (rest.startsWith("wallpapers/")) rest = rest.substring(11);
-            return "asset:" + rest;
-        }
-        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-        return "file:" + (slash >= 0 ? path.substring(slash + 1) : path);
+        return "asset:wallpapers/" + entry.file;
     }
 
     void dump(PrintWriter out) {

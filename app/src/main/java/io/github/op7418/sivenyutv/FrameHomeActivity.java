@@ -559,11 +559,6 @@ public final class FrameHomeActivity extends TvActivity {
         } else if (requestCode == FrameWallpapers.REQUEST_CROP) {
             if (wallpapers != null) wallpapers.onCropResult(resultCode);
             resetIdle();
-        } else if (requestCode == FrameWallpapers.REQUEST_PICK) {
-            if (wallpapers != null && resultCode == RESULT_OK) {
-                wallpapers.onPickResult(data);
-            }
-            resetIdle();
         }
     }
 
