@@ -81,6 +81,8 @@ final class FrameWallpapers {
     private static final String KEY_HIDDEN = "hidden-entries";
     static final int REQUEST_LOCAL = 77;
     static final int REQUEST_CROP = 78;
+    /** 媒体库单选，用于「固定壁纸」挑一张。 */
+    static final int REQUEST_PICK = 79;
     private final Runnable rotate = this::rotateNext;
     /** 上一次看到的轮播池内容，用于从媒体库返回时判断要不要立刻换图。 */
     private String poolSignature = "";
@@ -561,8 +563,8 @@ final class FrameWallpapers {
         TextView title = label("壁纸设置", 24);
         panel.addView(title, new LinearLayout.LayoutParams(-1, dp(42)));
         // 第一行：轮播模式
-        autoButton = button("", () -> setMode(true));
-        fixedButton = button("", () -> setMode(false));
+        autoButton = button("", this::chooseRotationTarget);
+        fixedButton = button("", this::pickSingleMedia);
         intervalButton = button("", this::chooseInterval);
         panel.addView(buttonRow(autoButton, fixedButton, intervalButton),
                 new LinearLayout.LayoutParams(-1, -2));
@@ -1047,11 +1049,140 @@ final class FrameWallpapers {
 
     private void refreshLabels() {
         if (autoButton == null) return;
-        autoButton.setText((rotating ? "✓  " : "") + "自动轮播");
-        fixedButton.setText((!rotating ? "✓  " : "") + "固定壁纸");
+        int target = rotationTarget();
+        autoButton.setText(target < 0 ? "轮播范围" : "✓  轮播：" + rotationTargetLabel());
+        fixedButton.setText("固定壁纸…");
         intervalButton.setText("间隔：" + minutes + " 分钟");
         for (int i = 0; i < captions.size(); i++)
             captions.get(i).setText((i == current ? "✓ " : "") + entries.get(i).name);
+    }
+
+    /**
+     * 轮播范围：0 只壁纸 / 1 只屏保 / 2 两个都轮播 / -1 关闭轮播。
+     *
+     * <p>老版本没有这个键，用 {@code rotating} 推导，保证升级后行为不变。
+     */
+    private int rotationTarget() {
+        return prefs.getInt("rotation-target", rotating ? 0 : -1);
+    }
+
+    private String rotationTargetLabel() {
+        switch (rotationTarget()) {
+            case 1: return "屏保";
+            case 2: return "壁纸+屏保";
+            default: return "壁纸";
+        }
+    }
+
+    /**
+     * 轮播范围。
+     *
+     * <p>轮播池就是媒体库全部素材，不再要求先勾选——用户要的是「开轮播就全轮」。
+     * 这里只决定这次轮播作用到壁纸、屏保，还是两者。
+     */
+    private void chooseRotationTarget() {
+        final String[] items = {"壁纸轮播", "屏保轮播", "壁纸和屏保都轮播"};
+        int checked = Math.max(0, rotationTarget());
+        AlertDialog picker = new AlertDialog.Builder(activity)
+                .setTitle("轮播范围")
+                .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    applyRotationTarget(which);
+                })
+                .setNegativeButton("关闭轮播", (dialog, which) -> applyRotationTarget(-1))
+                .show();
+        Serif.applyTo(picker);
+        picker.getWindow().getDecorView().post(() -> Serif.applyTo(picker));
+    }
+
+    private void applyRotationTarget(int target) {
+        prefs.edit().putInt("rotation-target", target).apply();
+        boolean wallpaperRotate = target == 0 || target == 2;
+        setMode(wallpaperRotate);
+        // 屏保轮播 = 播放列表覆盖全部素材；关闭/只壁纸时保留用户自己挑的那批
+        boolean saverRotate = target == 1 || target == 2;
+        if (saverRotate) SaverSelection.save(activity, allMediaPaths());
+        Serif.toast(activity, target < 0 ? "已关闭轮播" : "轮播：" + itemsLabel(target));
+    }
+
+    private String itemsLabel(int target) {
+        switch (target) {
+            case 1: return "屏保";
+            case 2: return "壁纸和屏保";
+            default: return "壁纸";
+        }
+    }
+
+    /** 媒体库里所有素材的路径（内置 asset + 本地文件），给屏保轮播用。 */
+    private List<String> allMediaPaths() {
+        List<String> paths = new ArrayList<>();
+        for (Entry entry : entries) {
+            if (entry.id.startsWith("user-")) {
+                paths.add(new java.io.File(userDir(), entry.file.substring(5)).getAbsolutePath());
+            } else if (!entry.file.startsWith("builtin:")) {
+                paths.add("asset:wallpapers/" + entry.file);
+            }
+        }
+        return paths;
+    }
+
+    /** 「固定壁纸」先去媒体库挑一张，挑完再问做壁纸、做屏保还是都做。 */
+    private void pickSingleMedia() {
+        if (dialog != null && dialog.isShowing()) dialog.dismiss();
+        try {
+            android.content.Intent intent = new android.content.Intent(activity, SaverPickerActivity.class);
+            intent.putExtra(SaverPickerActivity.EXTRA_SINGLE, true);
+            activity.startActivityForResult(intent, REQUEST_PICK);
+        } catch (RuntimeException unavailable) {
+            Serif.toast(activity, "打不开媒体库");
+        }
+    }
+
+    /** 媒体库单选返回：问用途，然后落到壁纸 / 屏保 / 两者。 */
+    void onPickResult(android.content.Intent data) {
+        if (data == null) return;
+        final String path = data.getStringExtra(SaverPickerActivity.EXTRA_PICKED);
+        if (path == null || path.isEmpty()) return;
+        AlertDialog target = new AlertDialog.Builder(activity)
+                .setTitle("用这张做什么？")
+                .setItems(new String[]{"设为壁纸", "设为屏保", "壁纸和屏保都用"}, (dialog, which) -> {
+                    boolean asWallpaper = which == 0 || which == 2;
+                    boolean asSaver = which == 1 || which == 2;
+                    if (asWallpaper) applyPickedWallpaper(path);
+                    if (asSaver) SaverSelection.save(activity, java.util.Collections.singletonList(path));
+                    Serif.toast(activity, which == 0 ? "已设为壁纸"
+                            : which == 1 ? "已设为屏保" : "壁纸和屏保都设好了");
+                })
+                .show();
+        Serif.applyTo(target);
+        target.getWindow().getDecorView().post(() -> Serif.applyTo(target));
+    }
+
+    private void applyPickedWallpaper(String path) {
+        prefs.edit().putInt("rotation-target", 0).apply();
+        setMode(false);
+        // 池概念取消：轮播就是全部素材，这里清掉旧的勾选池免得干扰
+        WallpaperPool.clear(activity);
+        poolSignature = "";
+        String key = keyOfPath(path);
+        for (int i = 0; i < entries.size(); i++) {
+            if (poolKey(entries.get(i)).equals(key)) {
+                load(i);
+                return;
+            }
+        }
+        Serif.toast(activity, "这张暂不支持作为壁纸");
+    }
+
+    /** 与媒体库那边的 wallpaperKey 规则一致。 */
+    private static String keyOfPath(String path) {
+        if (path.startsWith("asset:")) {
+            String rest = path.substring(6);
+            if (rest.startsWith("wallpapers/")) rest = rest.substring(11);
+            return "asset:" + rest;
+        }
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return "file:" + (slash >= 0 ? path.substring(slash + 1) : path);
     }
 
     void dump(PrintWriter out) {

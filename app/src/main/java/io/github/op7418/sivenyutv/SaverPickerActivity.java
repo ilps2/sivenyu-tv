@@ -39,6 +39,9 @@ import java.util.Set;
  * 不存绝对路径——旧版屏保选择存绝对路径，目录一变整批勾选就被判失效清空。
  */
 public final class SaverPickerActivity extends TvActivity {
+    /** 单选模式：点一格就带着路径返回，用于壁纸面板的「固定壁纸」。 */
+    static final String EXTRA_SINGLE = "single-pick";
+    static final String EXTRA_PICKED = "picked-path";
     private static final int MAX_FOUND = 100;
     private static final int MAX_PICK = 40;
 
@@ -53,6 +56,7 @@ public final class SaverPickerActivity extends TvActivity {
     private LinearLayout grid;
     private TextView status;
     private ScrollView scroller;
+    private boolean singlePick;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -61,6 +65,7 @@ public final class SaverPickerActivity extends TvActivity {
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
 
         selected.addAll(SaverSelection.list(this));
+        singlePick = getIntent().getBooleanExtra(EXTRA_SINGLE, false);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -72,17 +77,19 @@ public final class SaverPickerActivity extends TvActivity {
         header.setGravity(Gravity.BOTTOM);
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(label("媒体库", 28, "sans-serif-light", 0xFFFFFFFF));
+        texts.addView(label(singlePick ? "选择素材" : "媒体库", 28, "sans-serif-light", 0xFFFFFFFF));
         status = label("正在扫描存储…", 13, "sans-serif", 0x8AFFFFFF);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2);
         statusParams.topMargin = dp(6);
         texts.addView(status, statusParams);
         header.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
-        // 轮播间隔和画面位置这些还留在桌面壁纸面板里，这里给一个直达入口
-        header.addView(toolButton("轮播间隔", this::chooseInterval));
-        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(-2, -2);
-        moreParams.leftMargin = dp(12);
-        header.addView(toolButton("壁纸设置", this::openWallpaperPanel), moreParams);
+        if (!singlePick) {
+            // 轮播间隔和画面位置这些还留在桌面壁纸面板里，这里给一个直达入口
+            header.addView(toolButton("轮播间隔", this::chooseInterval));
+            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(-2, -2);
+            moreParams.leftMargin = dp(12);
+            header.addView(toolButton("壁纸设置", this::openWallpaperPanel), moreParams);
+        }
         LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
         headerParams.bottomMargin = dp(16);
         root.addView(header, headerParams);
@@ -101,7 +108,7 @@ public final class SaverPickerActivity extends TvActivity {
         scroller.addView(grid, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        root.addView(buildFooter());
+        if (!singlePick) root.addView(buildFooter());
         setContentView(root);
 
         scan();
@@ -430,6 +437,12 @@ public final class SaverPickerActivity extends TvActivity {
         tile.setTag(R.id.tag_name, name);
 
         tile.setOnClickListener(v -> {
+            if (singlePick) {
+                // 单选模式：选中就带着路径回去，由壁纸面板问「做壁纸还是屏保」
+                setResult(RESULT_OK, new Intent().putExtra(EXTRA_PICKED, path));
+                finish();
+                return;
+            }
             if (selected.contains(path)) {
                 selected.remove(path);
             } else {
@@ -461,15 +474,17 @@ public final class SaverPickerActivity extends TvActivity {
                 Object tag = tile.getTag();
                 Object nameTag = tile.getTag(R.id.tag_name);
                 if (!(tag instanceof String) || !(nameTag instanceof TextView)) continue;
-                boolean on = selected.contains(tag);
+                boolean on = !singlePick && selected.contains(tag);
                 // 和壁纸面板同款：名字前面加 ✓，不再额外套常亮边框
                 CharSequence base = tile.getContentDescription();
                 ((TextView) nameTag).setText(on ? "✓ " + base : base);
                 applyTileLook(tile);
             }
         }
-        status.setText("已选 " + selected.size() + " 项　·　共 " + entries.size()
-                + " 项　·　确认键勾选　·　下方按钮决定用途");
+        status.setText(singlePick
+                ? "共 " + entries.size() + " 项　·　确认键选中，返回后选择做壁纸还是屏保"
+                : "已选 " + selected.size() + " 项　·　共 " + entries.size()
+                        + " 项　·　确认键勾选　·　下方按钮决定用途");
     }
 
     private void loadThumbs() {
@@ -613,7 +628,7 @@ public final class SaverPickerActivity extends TvActivity {
         int current = getSharedPreferences("frame-wallpapers", MODE_PRIVATE).getInt("minutes", 5);
         int checked = 1;
         for (int i = 0; i < options.length; i++) if (options[i] == current) checked = i;
-        new android.app.AlertDialog.Builder(this)
+        android.app.AlertDialog picker = new android.app.AlertDialog.Builder(this)
                 .setTitle("壁纸轮播间隔")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     getSharedPreferences("frame-wallpapers", MODE_PRIVATE)
@@ -623,6 +638,8 @@ public final class SaverPickerActivity extends TvActivity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+        Serif.applyTo(picker);
+        picker.getWindow().getDecorView().post(() -> Serif.applyTo(picker));
     }
 
     /** 画面位置、本地导入、手机上传这些还在桌面壁纸面板里，跳回去打开它。 */

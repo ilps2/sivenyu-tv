@@ -222,14 +222,8 @@ public final class FrameHomeActivity extends TvActivity {
         // 视频壁纸在播时，玻璃折射取样改用视频当前帧
         dock.setLiveSource((android.view.TextureView) wallpapersVideo.view());
 
-        // 「壁纸」现在打开统一的媒体库：先勾选，再决定做壁纸还是屏保
-        addDockItem(dock, "壁纸", () -> {
-            try {
-                startActivity(new Intent(this, SaverPickerActivity.class));
-            } catch (RuntimeException unavailable) {
-                wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0));
-            }
-        });
+        // 「壁纸」直接进壁纸设置面板；选素材是在面板里点「固定壁纸…」才进去
+        addDockItem(dock, "壁纸", () -> wallpapers.show(dockItems.isEmpty() ? dock : dockItems.get(0)));
         addDockItem(dock, "应用", this::openPicker);
         addDockItem(dock, "信号源", () -> {
             if (!XiaomiControls.showInputs(this)) message("暂时无法打开信号源");
@@ -564,6 +558,11 @@ public final class FrameHomeActivity extends TvActivity {
             resetIdle();
         } else if (requestCode == FrameWallpapers.REQUEST_CROP) {
             if (wallpapers != null) wallpapers.onCropResult(resultCode);
+            resetIdle();
+        } else if (requestCode == FrameWallpapers.REQUEST_PICK) {
+            if (wallpapers != null && resultCode == RESULT_OK) {
+                wallpapers.onPickResult(data);
+            }
             resetIdle();
         }
     }
