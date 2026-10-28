@@ -1118,9 +1118,12 @@ final class FrameWallpapers {
         prefs.edit().putInt("rotation-target", target).apply();
         boolean wallpaperRotate = target == 0 || target == 2;
         setMode(wallpaperRotate);
-        // 屏保轮播 = 播放列表覆盖全部素材；关闭/只壁纸时保留用户自己挑的那批
         boolean saverRotate = target == 1 || target == 2;
-        if (saverRotate) SaverSelection.save(activity, allMediaPaths());
+        // 关键：只在播放列表为空时用全部素材兜底。以前这里无条件覆盖，
+        // 用户精心挑的屏保列表会因为「顺手开个轮播」被整批冲掉，且无法撤销。
+        if (saverRotate && SaverSelection.list(activity).isEmpty()) {
+            SaverSelection.save(activity, allMediaPaths());
+        }
         Serif.toast(activity, target < 0 ? "已关闭轮播" : "轮播：" + itemsLabel(target));
     }
 

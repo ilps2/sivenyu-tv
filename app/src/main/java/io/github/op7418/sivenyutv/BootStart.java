@@ -9,6 +9,9 @@ import android.content.pm.PackageManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.Gravity;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 /**
@@ -167,7 +170,10 @@ public final class BootStart {
                         "小米屏保：" + (stockSaverDisabled(a) ? "已禁用" : "未禁用（会抢屏）"),
                         "自定义图标（banner）",
                         "接管 Home 键",
-                        "音量提示：" + (VolumeOverlay.enabled(a) ? "已开启" : "已关闭")
+                        "音量提示：" + (VolumeOverlay.enabled(a) ? "已开启" : "已关闭"),
+                        "导出配置到文件",
+                        "从文件导入配置",
+                        "操作说明"
                 }, (dialog, index) -> {
                     if (index == 0) {
                         showStockSaverHelp(a);
@@ -179,11 +185,17 @@ public final class BootStart {
                         } catch (RuntimeException unavailable) {
                             showDefaultHomeHelp(a);
                         }
-                    } else {
+                    } else if (index == 3) {
                         boolean enabled = !VolumeOverlay.enabled(a);
                         VolumeOverlay.setEnabled(a, enabled);
                         if (a instanceof TvActivity) ((TvActivity) a).refreshVolumeFeedback();
                         Serif.toast(a, enabled ? "已开启音量提示" : "已关闭音量提示");
+                    } else if (index == 4) {
+                        exportConfig(a);
+                    } else if (index == 5) {
+                        importConfig(a);
+                    } else {
+                        showHelp(a);
                     }
                 })
                 .setNegativeButton("返回", null)
@@ -191,8 +203,83 @@ public final class BootStart {
         show(menu);
     }
 
-    /** 小米自带屏保是否已被停用（停用后本桌面的屏保才能留在屏幕上）。 */
-    static boolean stockSaverDisabled(Context context) {
+    /** 把壁纸/屏保/排序等配置整体导出成一个 JSON，方便换机或重装后恢复。 */
+    private static void exportConfig(Activity a) {
+        try {
+            int count = ConfigBackup.export(a);
+            Serif.toast(a, "已导出 " + count + " 项到 " + ConfigBackup.file(a).getAbsolutePath());
+        } catch (Exception failed) {
+            Log.w("TvHome", "导出配置失败", failed);
+            Serif.toast(a, "导出失败：" + failed.getMessage());
+        }
+    }
+
+    private static void importConfig(Activity a) {
+        AlertDialog dialog = new AlertDialog.Builder(a)
+                .setTitle("从文件导入配置")
+                .setMessage("会覆盖当前的壁纸、构图、屏保列表、应用排序和音量开关。\n\n文件：\n"
+                        + ConfigBackup.file(a).getAbsolutePath())
+                .setPositiveButton("导入", (d, which) -> {
+                    try {
+                        int count = ConfigBackup.restore(a);
+                        Serif.toast(a, "已恢复 " + count + " 项");
+                        // 重建界面让新配置立刻生效
+                        if (a instanceof FrameHomeActivity) a.recreate();
+                    } catch (Exception failed) {
+                        Log.w("TvHome", "导入配置失败", failed);
+                        Serif.toast(a, "导入失败：" + failed.getMessage());
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dialog.show();
+        Serif.applyTo(dialog);
+        dialog.getWindow().getDecorView().post(() -> Serif.applyTo(dialog));
+    }
+
+    /** 遥控器操作说明：这些手势没有视觉提示，隔久了容易忘。 */
+    private static void showHelp(Activity a) {
+        String text = String.join("\n\n", new String[]{
+                "【首页】\n方向键移动焦点，确认键启动应用。",
+                "【首页长按】\n进入排序模式：方向键与相邻格交换，确认保存，返回撤销。",
+                "【首页格子长按】\n删除应用，或只从首页移除。",
+                "【dock 壁纸】\n打开壁纸设置面板。点格子立即切换壁纸。",
+                "【固定壁纸】\n按下后按钮变成「点下面选一张…」，再点格子可以选：设为壁纸 / 设为屏保 / 两者都用。",
+                "【壁纸面板长按格子】\n调整画面位置，或删除该壁纸。",
+                "【轮播】\n面板第一项选范围：壁纸 / 屏保 / 都轮播。轮播池是媒体库全部素材。",
+                "【屏保】\n设置 → 立即播放屏保 可预览。设置 → 媒体库 可多选管理屏保内容。",
+                "【音量】\n桌面和本应用的页面里按音量键有浮层；第三方应用里没有，这是系统限制。"
+        });
+        TextView body = new TextView(a);
+        body.setText(text);
+        body.setTextSize(15);
+        body.setLineSpacing(dp(a, 5), 1f);
+        body.setTextColor(0xE6FFFFFF);
+        float density = a.getResources().getDisplayMetrics().density;
+        int pad = Math.round(24 * density);
+        body.setPadding(pad, Math.round(8 * density), pad, Math.round(8 * density));
+        body.setTypeface(Serif.regular(a));
+        ScrollView scroller = new ScrollView(a);
+        scroller.addView(body, new ScrollView.LayoutParams(-1, -2));
+
+        AlertDialog dialog = new AlertDialog.Builder(a)
+                .setTitle("操作说明")
+                .setView(scroller)
+                .setPositiveButton("知道了", null)
+                .create();
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(Math.round(760 * density), -2);
+        }
+        Serif.applyTo(dialog);
+        dialog.getWindow().getDecorView().post(() -> Serif.applyTo(dialog));
+    }
+
+    private static int dp(Activity a, int value) {
+        return Math.round(value * a.getResources().getDisplayMetrics().density);
+    }
+
+    /** 小米自带屏保是否已被停用（停用后本桌面的屏保才能留在屏幕上）。 */    static boolean stockSaverDisabled(Context context) {
         try {
             int state = context.getPackageManager()
                     .getApplicationEnabledSetting("com.mitv.screensaver");

@@ -49,3 +49,6 @@ app/src/main/assets/wallpapers/generated/*
 !app/src/main/assets/wallpapers/generated/sky-blue-thumb.png
 !app/src/main/assets/wallpapers/generated/glass-sea.png
 !app/src/main/assets/wallpapers/generated/glass-sea-thumb.png
+
+# WorkBuddy 项目数据（工作日历/自动化配置），不进开源仓库
+.workbuddy/
